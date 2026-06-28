@@ -10,6 +10,7 @@ def test_candidate_uses_released_cadence_routes_and_compact_history() -> None:
 
     assert config["num_steps_per_env"] == 1
     assert config["num_updates_per_iteration"] == 16
+    assert config["random_action_steps"] == 10_240
     assert config["replay"]["capacity_steps"] == 5_000
     assert config["replay"]["terminal_capacity_per_env"] == 16
     assert config["replay"]["autoreset_mode"] == "same_step"

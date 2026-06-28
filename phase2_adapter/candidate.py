@@ -78,6 +78,7 @@ def candidate_config(expert_provider: BFMZeroExpertProvider, *, seed: int) -> di
     return {
         "num_steps_per_env": 1,
         "num_updates_per_iteration": 16,
+        "random_action_steps": 10_240,
         "save_interval": 9_375,
         "check_for_nan": True,
         "obs_groups": routes,
