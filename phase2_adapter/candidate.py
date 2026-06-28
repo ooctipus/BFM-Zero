@@ -122,6 +122,26 @@ def candidate_config(expert_provider: BFMZeroExpertProvider, *, seed: int) -> di
     }
 
 
+class _BFMEvaluationCheckpointRunner(OffPolicyRunner):
+    """Write compact milestone policies and one final recovery checkpoint."""
+
+    def __init__(self, *args, final_transitions: int, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._final_transitions = final_transitions
+
+    def save(self, path: str, infos: dict | None = None) -> None:
+        if self.logger.log_dir is None:
+            raise RuntimeError("BFM milestone checkpoints require a log directory.")
+        destination = Path(self.logger.log_dir) / "evaluation_checkpoints"
+        destination.mkdir(exist_ok=True)
+        policy = destination / f"{self.collected_transitions}.pt"
+        temporary = policy.with_suffix(".tmp")
+        torch.save({"model_state_dict": self.alg.get_policy().state_dict()}, temporary)
+        temporary.replace(policy)
+        if self.collected_transitions == self._final_transitions:
+            super().save(path, infos)
+
+
 def main() -> None:
     """Run the candidate for an exact number of native environment transitions."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -147,11 +167,12 @@ def main() -> None:
         device=args.device,
     )
     set_seed_everywhere(args.seed)
-    runner = OffPolicyRunner(
+    runner = _BFMEvaluationCheckpointRunner(
         env,
         candidate_config(BFMZeroExpertProvider(seed=args.seed), seed=args.seed),
         log_dir=str(args.output_dir),
         device=args.device,
+        final_transitions=args.transitions,
     )
     runner.learn(args.transitions // args.num_envs)
     torch.save({"model_state_dict": runner.alg.get_policy().state_dict()}, args.output_dir / "policy.pt")

@@ -45,7 +45,8 @@ def main() -> None:
     torch.cuda.set_device(torch.device(args.device))
     set_seed_everywhere(args.evaluation_seed)
     if args.checkpoint_type == "source":
-        model = load_model_from_checkpoint_dir(args.model_folder / "checkpoint", device="cuda")
+        checkpoint = args.checkpoint if args.checkpoint is not None else args.model_folder / "checkpoint"
+        model = load_model_from_checkpoint_dir(checkpoint, device="cuda")
         model.to(args.device)
         model.eval()
     else:

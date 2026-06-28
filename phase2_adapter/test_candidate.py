@@ -1,10 +1,13 @@
 """Static checks for the BFM-Zero Phase 2 candidate entry point."""
 
+from types import SimpleNamespace
+
 import torch
 from rsl_rl.models.forward_backward_model import ForwardBackwardModel
+from rsl_rl.runners.off_policy_runner import OffPolicyRunner
 from tensordict import TensorDict
 
-from phase2_adapter.candidate import candidate_config
+from phase2_adapter.candidate import _BFMEvaluationCheckpointRunner, candidate_config
 from phase2_adapter.environment import BFM_AUXILIARY_EVIDENCE_NAMES, BFM_FIELD_WIDTHS
 from phase2_adapter.policy import BFMCandidatePolicy
 
@@ -57,3 +60,32 @@ def test_candidate_policy_reuses_named_model_routes() -> None:
     assert policy._model is policy
     assert policy.backward_map(native).shape == (2, 4)
     assert policy.act(native, context).shape == (2, 29)
+
+
+def test_candidate_keeps_compact_milestones_and_one_full_checkpoint(tmp_path, monkeypatch) -> None:
+    """Intermediate evaluation points should not duplicate replay and optimizer state."""
+    full_saves: list[tuple[str, dict | None]] = []
+
+    def record_full_save(_runner, path: str, infos: dict | None = None) -> None:
+        full_saves.append((path, infos))
+
+    monkeypatch.setattr(OffPolicyRunner, "save", record_full_save)
+    runner = object.__new__(_BFMEvaluationCheckpointRunner)
+    runner.logger = SimpleNamespace(log_dir=str(tmp_path))
+    runner.alg = SimpleNamespace(get_policy=lambda: torch.nn.Linear(2, 1))
+    runner._final_transitions = 19_200_000
+
+    runner.collected_transitions = 9_600_000
+    runner.save(str(tmp_path / "full.pt"))
+    first = tmp_path / "evaluation_checkpoints" / "9600000.pt"
+
+    assert first.is_file()
+    assert "model_state_dict" in torch.load(first, weights_only=True)
+    assert full_saves == []
+
+    runner.collected_transitions = 19_200_000
+    runner.save(str(tmp_path / "full.pt"), {"final": True})
+    second = tmp_path / "evaluation_checkpoints" / "19200000.pt"
+
+    assert second.is_file()
+    assert full_saves == [(str(tmp_path / "full.pt"), {"final": True})]

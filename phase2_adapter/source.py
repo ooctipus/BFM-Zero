@@ -207,6 +207,10 @@ def _train(workspace: Workspace) -> None:
                 num_metric_updates = 0
                 interval_start = time.perf_counter()
 
+            if completed % cfg.checkpoint_every_steps == 0:
+                checkpoint = workspace.work_dir / "evaluation_checkpoints" / str(completed) / "model"
+                agent._model.save(str(checkpoint))
+
         replay.assert_no_errors()
         agent.save(str(workspace.work_dir / "checkpoint"))
     finally:
@@ -235,7 +239,7 @@ def _load_config(args: argparse.Namespace) -> TrainConfig:
             "num_agent_updates": 16,
             "update_agent_every": args.num_envs,
             "log_every_updates": args.log_every_transitions,
-            "checkpoint_every_steps": args.transitions,
+            "checkpoint_every_steps": args.evaluation_checkpoint_every_transitions,
             "checkpoint_buffer": False,
             "prioritization": False,
             "use_trajectory_buffer": False,
@@ -258,10 +262,15 @@ def main() -> None:
     parser.add_argument("--num_envs", type=int, default=1024)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--log_every_transitions", type=int, default=384_000)
+    parser.add_argument("--evaluation_checkpoint_every_transitions", type=int, default=9_600_000)
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     if args.transitions % args.num_envs:
         raise ValueError("transitions must be divisible by num_envs.")
+    if args.evaluation_checkpoint_every_transitions < 1:
+        raise ValueError("evaluation_checkpoint_every_transitions must be positive.")
+    if args.evaluation_checkpoint_every_transitions % args.num_envs:
+        raise ValueError("evaluation checkpoint cadence must be divisible by num_envs.")
     if args.output_dir.exists():
         raise FileExistsError(f"Output directory already exists: {args.output_dir}")
     torch.cuda.set_device(torch.device(args.device))
