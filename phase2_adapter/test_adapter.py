@@ -1,0 +1,150 @@
+"""Contract tests for the native BFM-Zero Phase 2 adapter."""
+
+from __future__ import annotations
+
+from contextlib import nullcontext
+from types import SimpleNamespace
+
+import pytest
+import torch
+
+from phase2_adapter.environment import (
+    BFM_ACTION_DIM,
+    BFM_AUXILIARY_EVIDENCE_NAMES,
+    BFM_FIELD_WIDTHS,
+    BFMZeroVecEnv,
+)
+from phase2_adapter.evaluation import normalize_tracking_metrics
+
+
+class _ActionSpace:
+    shape = (2, BFM_ACTION_DIM)
+
+
+class _BaseEnv:
+    def __init__(self) -> None:
+        self.num_envs = 2
+        self.max_episode_length = 300
+        self.episode_length_buf = torch.zeros(2, dtype=torch.long)
+        self.state = torch.zeros(2)
+        self.last_actions = torch.zeros(2, BFM_ACTION_DIM)
+
+    def _compute_observations(self) -> None:
+        pass
+
+    def reset_envs_idx(self, env_ids: torch.Tensor, *args, **kwargs) -> None:
+        del args, kwargs
+        self.state[env_ids] = 0.0
+        self.last_actions[env_ids] = 0.0
+        self.episode_length_buf[env_ids] = 0
+
+
+class _SameStepEnv:
+    def __init__(self) -> None:
+        self._env = _BaseEnv()
+        self.num_envs = 2
+        self.device = torch.device("cpu")
+        self.action_space = _ActionSpace()
+        self._creation_config = SimpleNamespace(lafan_tail_path="fixture")
+        self.last_input_actions: torch.Tensor | None = None
+
+    def reset(self, to_numpy: bool = False):
+        assert not to_numpy
+        self._env.reset_envs_idx(torch.arange(2))
+        return self._get_g1env_observation(to_numpy=False), {}
+
+    def step(self, actions: torch.Tensor, to_numpy: bool = False):
+        assert not to_numpy
+        self.last_input_actions = actions.clone()
+        self._env.last_actions.copy_(actions)
+        self._env.state += 1.0
+        self._env.episode_length_buf += 1
+        truncated = torch.tensor([False, True])
+        terminated = torch.tensor([False, False])
+        self._env.reset_envs_idx(truncated.nonzero().flatten())
+        info = {"aux_rewards": {name: torch.full((2,), float(index)) for index, name in enumerate(BFM_AUXILIARY_EVIDENCE_NAMES)}}
+        return self._get_g1env_observation(to_numpy=False), torch.ones(2), terminated, truncated, info
+
+    def _get_g1env_observation(self, to_numpy: bool = False):
+        assert not to_numpy
+        state = self._env.state.unsqueeze(-1)
+        return {
+            "state": state.repeat(1, BFM_FIELD_WIDTHS["state"]),
+            "last_action": self._env.last_actions.clone(),
+            "history_actor": state.repeat(1, BFM_FIELD_WIDTHS["history_actor"]),
+            "privileged_state": state.repeat(1, BFM_FIELD_WIDTHS["privileged_state"]),
+        }
+
+    def _get_qpos_qvel(self, to_numpy: bool = False):
+        assert not to_numpy
+        state = self._env.state.unsqueeze(-1)
+        return state.repeat(1, 36), state.repeat(1, 35)
+
+    def close(self) -> None:
+        pass
+
+
+def test_correct_terminal_captures_pre_reset_state_and_keeps_action_identity(monkeypatch) -> None:
+    """Done rows should carry exact pre-reset fields while returned rows remain post-reset."""
+    monkeypatch.setattr(torch.random, "fork_rng", lambda **_kwargs: nullcontext())
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    native = _SameStepEnv()
+    env = BFMZeroVecEnv(native, terminal_profile="correct_terminal", device="cpu")
+    actions = torch.arange(2 * BFM_ACTION_DIM, dtype=torch.float32).reshape(2, BFM_ACTION_DIM)
+
+    observations, _rewards, done, extras = env.step(actions)
+
+    assert done.tolist() == [False, True]
+    assert torch.all(observations["state"][1] == 0.0)
+    assert extras["final_obs_valid"].tolist() == [False, True]
+    assert torch.all(extras["final_obs"]["state"][1] == 1.0)
+    assert torch.all(extras["final_obs"]["last_action"][1] == actions[1])
+    assert torch.all(extras["final_qpos"][1] == 1.0)
+    assert torch.equal(native.last_input_actions, actions)
+    assert extras["auxiliary_reward_evidence"][0].tolist() == list(map(float, range(len(BFM_AUXILIARY_EVIDENCE_NAMES))))
+
+
+def test_native_reference_is_explicitly_separate_from_correct_terminal() -> None:
+    """The historical profile should never masquerade as an exact-final stream."""
+    env = BFMZeroVecEnv(_SameStepEnv(), terminal_profile="native_reference", device="cpu")
+    _observations, _rewards, _done, extras = env.step(torch.zeros(2, BFM_ACTION_DIM))
+
+    assert env.cfg["terminal_profile"] == "native_reference"
+    assert "final_obs" not in extras
+    assert "final_obs_valid" not in extras
+
+
+def test_tracking_normalization_requires_all_native_motions_and_scalars() -> None:
+    """BFM normalization should preserve native values and reject incomplete output."""
+    metrics = {
+        "motion-a": {"motion_id": 3, "motion_file": "motion-a", "emd": 0.2, "distance": 0.4},
+        "motion-b": {"motion_id": 4, "motion_file": "motion-b", "emd": 0.3, "distance": 0.5},
+    }
+    rows = normalize_tracking_metrics(
+        metrics,
+        implementation="released",
+        training_seed=4728,
+        evaluation_seed=1,
+        checkpoint_transition=211_200_000,
+        terminal_profile="native_reference",
+        run_id="fixture",
+        evaluator_hash="eval",
+        dataset_hash="data",
+        expected_motion_count=2,
+    )
+
+    assert len(rows) == 4
+    assert {row["metric_value"] for row in rows if row["metric_name"] == "emd"} == {0.2, 0.3}
+    with pytest.raises(ValueError, match="Expected 2"):
+        normalize_tracking_metrics(
+            {"motion-a": metrics["motion-a"]},
+            implementation="released",
+            training_seed=4728,
+            evaluation_seed=1,
+            checkpoint_transition=211_200_000,
+            terminal_profile="native_reference",
+            run_id="fixture",
+            evaluator_hash="eval",
+            dataset_hash="data",
+            expected_motion_count=2,
+        )
