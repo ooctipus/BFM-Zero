@@ -74,6 +74,8 @@ def test_candidate_keeps_compact_milestones_and_one_full_checkpoint(tmp_path, mo
     runner.logger = SimpleNamespace(log_dir=str(tmp_path))
     runner.alg = SimpleNamespace(get_policy=lambda: torch.nn.Linear(2, 1))
     runner._final_transitions = 19_200_000
+    curriculum_events: list[int] = []
+    runner.curriculum_event = lambda: curriculum_events.append(runner.collected_transitions)
 
     runner.collected_transitions = 9_600_000
     runner.save(str(tmp_path / "full.pt"))
@@ -82,6 +84,7 @@ def test_candidate_keeps_compact_milestones_and_one_full_checkpoint(tmp_path, mo
     assert first.is_file()
     assert "model_state_dict" in torch.load(first, weights_only=True)
     assert full_saves == []
+    assert curriculum_events == [9_600_000]
 
     runner.collected_transitions = 19_200_000
     runner.save(str(tmp_path / "full.pt"), {"final": True})
@@ -89,3 +92,4 @@ def test_candidate_keeps_compact_milestones_and_one_full_checkpoint(tmp_path, mo
 
     assert second.is_file()
     assert full_saves == [(str(tmp_path / "full.pt"), {"final": True})]
+    assert curriculum_events == [9_600_000, 19_200_000]

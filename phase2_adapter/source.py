@@ -24,6 +24,7 @@ from humanoidverse.agents.envs.humanoidverse_isaac import load_expert_trajectori
 from humanoidverse.agents.utils import set_seed_everywhere
 from humanoidverse.train import TrainConfig, Workspace
 
+from .curriculum import run_curriculum_event
 from .environment import BFM_AUXILIARY_EVIDENCE_NAMES, BFMZeroVecEnv
 from .specification import observation_routes, replay_config
 
@@ -127,6 +128,44 @@ def _save_evaluation_checkpoint(model: Any, work_dir: Path, transition: int) -> 
     model.save(str(checkpoint_root / "model"))
 
 
+def _source_curriculum_event(
+    workspace: Workspace,
+    expert: Any,
+    *,
+    transition: int,
+    env: BFMZeroVecEnv | None = None,
+) -> None:
+    """Apply the same native tracking curriculum to the released learner."""
+    model = workspace.agent._model
+    motion_ids = torch.as_tensor(expert.motion_ids, dtype=torch.long, device=workspace.agent.device)
+    expected_motion_ids = torch.arange(len(expert.priorities), device=motion_ids.device)
+    if not torch.equal(torch.sort(motion_ids).values, expected_motion_ids):
+        raise ValueError("BFM source expert motion ids must be a complete permutation.")
+
+    def update_expert_priorities(priorities: torch.Tensor) -> None:
+        expert.update_priorities(
+            priorities=priorities.index_select(0, motion_ids).to(workspace.cfg.buffer_device),
+            idxs=torch.arange(motion_ids.numel(), device=workspace.cfg.buffer_device),
+        )
+
+    was_training = model.training
+    model.eval()
+    try:
+        run_curriculum_event(
+            workspace.agent,
+            env=workspace.train_env,
+            num_envs=workspace.cfg.online_parallel_envs,
+            transition=transition,
+            output_dir=workspace.work_dir / "curriculum_events",
+            device=workspace.agent.device,
+            update_expert_priorities=update_expert_priorities,
+        )
+    finally:
+        model.train(was_training)
+    if env is not None:
+        env.reset()
+
+
 def _train(workspace: Workspace) -> None:
     """Run the released update equations over exact bridge transitions."""
     cfg = workspace.cfg
@@ -136,6 +175,7 @@ def _train(workspace: Workspace) -> None:
         cfg.agent,
         device=cfg.buffer_device,
     )
+    _source_curriculum_event(workspace, expert, transition=0)
     env = BFMZeroVecEnv(workspace.train_env, terminal_profile="correct_terminal", device=cfg.env.device)
     observations = env.get_observations()
     replay = _SourceReplay(
@@ -216,6 +256,7 @@ def _train(workspace: Workspace) -> None:
 
             if completed % cfg.checkpoint_every_steps == 0:
                 _save_evaluation_checkpoint(agent._model, workspace.work_dir, completed)
+                _source_curriculum_event(workspace, expert, transition=completed, env=env)
 
         replay.assert_no_errors()
         agent.save(str(workspace.work_dir / "checkpoint"))

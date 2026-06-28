@@ -14,6 +14,7 @@ from rsl_rl.runners.off_policy_runner import OffPolicyRunner
 from humanoidverse.agents.envs.humanoidverse_isaac import HumanoidVerseIsaacConfig
 from humanoidverse.agents.utils import set_seed_everywhere
 
+from .curriculum import run_curriculum_event
 from .environment import BFM_AUXILIARY_EVIDENCE_NAMES, BFMZeroVecEnv
 from .expert import BFMZeroExpertProvider
 from .specification import observation_routes, replay_config
@@ -138,8 +139,30 @@ class _BFMEvaluationCheckpointRunner(OffPolicyRunner):
         temporary = policy.with_suffix(".tmp")
         torch.save({"model_state_dict": self.alg.get_policy().state_dict()}, temporary)
         temporary.replace(policy)
+        self.curriculum_event()
         if self.collected_transitions == self._final_transitions:
             super().save(path, infos)
+
+    def curriculum_event(self) -> None:
+        """Apply one bridge-owned tracking curriculum update."""
+        from .policy import BFMCandidatePolicy
+
+        model = self.alg.model
+        was_training = model.training
+        model.eval()
+        try:
+            run_curriculum_event(
+                BFMCandidatePolicy(model),
+                env=self.env.env,
+                num_envs=self.env.num_envs,
+                transition=self.collected_transitions,
+                output_dir=Path(self.logger.log_dir) / "curriculum_events",
+                device=self.device,
+                update_expert_priorities=lambda values: self.alg.expert.set_priorities(values.to(self.alg.expert.device)),
+            )
+        finally:
+            model.train(was_training)
+        self.env.reset()
 
 
 def main() -> None:
@@ -174,6 +197,7 @@ def main() -> None:
         device=args.device,
         final_transitions=args.transitions,
     )
+    runner.curriculum_event()
     runner.learn(args.transitions // args.num_envs)
     torch.save({"model_state_dict": runner.alg.get_policy().state_dict()}, args.output_dir / "policy.pt")
     env.close()

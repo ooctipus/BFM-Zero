@@ -112,6 +112,14 @@ class BFMZeroVecEnv(VecEnv):
         """Return the current named asymmetric BFM observations."""
         return self._observations
 
+    def reset(self) -> TensorDict:
+        """Reset the shared native environment after a curriculum event."""
+        observation, _info = self.env.reset(to_numpy=False)
+        self._observations = self._convert_observation(observation)
+        if self._capture is not None:
+            self._capture.begin_step()
+        return self._observations
+
     def step(self, actions: torch.Tensor) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:
         """Apply actions unchanged and expose native transition evidence."""
         if self._capture is not None:

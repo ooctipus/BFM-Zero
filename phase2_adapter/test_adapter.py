@@ -119,6 +119,16 @@ def test_native_reference_is_explicitly_separate_from_correct_terminal() -> None
     assert "final_obs_valid" not in extras
 
 
+def test_reset_refreshes_observations_after_shared_curriculum_evaluation() -> None:
+    """The wrapper should discard evaluator state before behavior collection resumes."""
+    env = BFMZeroVecEnv(_SameStepEnv(), terminal_profile="native_reference", device="cpu")
+    env.env._env.state.fill_(7.0)
+
+    observations = env.reset()
+
+    assert torch.all(observations["state"] == 0.0)
+
+
 def test_replay_terminal_capacity_covers_every_live_timeout() -> None:
     """A 5,000-step ring needs seventeen slots for deterministic 300-step episodes."""
     config = replay_config(seed=0)

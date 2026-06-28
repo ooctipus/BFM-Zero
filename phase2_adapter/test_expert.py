@@ -30,6 +30,7 @@ def test_expert_provider_reads_the_wrapped_native_motion_environment(tmp_path, m
         },
         lengths=torch.tensor([4]),
         priorities=torch.tensor([1.0]),
+        motion_ids=[0],
     )
 
     def load_expert(base_env, *_args, **_kwargs):

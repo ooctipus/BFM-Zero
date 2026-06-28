@@ -44,6 +44,10 @@ class BFMZeroExpertProvider:
         if frames.shape[1] != expected_width:
             raise ValueError(f"BFM expert width must be {expected_width}, got {frames.shape[1]}.")
         lengths = source.lengths.to(device=device, dtype=torch.long)
+        motion_ids = torch.as_tensor(source.motion_ids, dtype=torch.long)
+        expected_motion_ids = torch.arange(lengths.shape[0])
+        if not torch.equal(motion_ids.cpu(), expected_motion_ids):
+            raise ValueError("BFM expert clips must remain in native motion-id order.")
         clip_offsets = torch.cat((torch.zeros(1, device=device, dtype=torch.long), lengths.cumsum(dim=0)))
         if clip_offsets[-1] != frames.shape[0]:
             raise ValueError("BFM expert clip lengths do not span the frame tensor.")
