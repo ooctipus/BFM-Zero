@@ -150,7 +150,7 @@ def _train(workspace: Workspace) -> None:
         for vector_step in range(cfg.num_env_steps // cfg.online_parallel_envs):
             transition_count = vector_step * cfg.online_parallel_envs
             with torch.no_grad():
-                step_count = env.episode_length_buf
+                step_count = env.episode_length_buf.reshape(cfg.online_parallel_envs, 1)
                 context = agent.maybe_update_rollout_context(
                     z=context,
                     step_count=step_count,

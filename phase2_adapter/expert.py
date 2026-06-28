@@ -13,6 +13,8 @@ from rsl_rl.storage.forward_backward_expert import ForwardBackwardExpertBuffer, 
 
 from humanoidverse.agents.envs.humanoidverse_isaac import load_expert_trajectories_from_motion_lib
 
+from .environment import BFMZeroVecEnv
+
 
 @dataclass(frozen=True, slots=True)
 class BFMZeroExpertProvider:
@@ -23,7 +25,7 @@ class BFMZeroExpertProvider:
 
     def __call__(
         self,
-        env: object,
+        env: BFMZeroVecEnv,
         observation_schema: ForwardBackwardObservationSchema,
         device: str,
         *,
@@ -31,7 +33,7 @@ class BFMZeroExpertProvider:
     ) -> ForwardBackwardExpertBuffer:
         """Translate source expert state without carrying its sampling buffer."""
         source = load_expert_trajectories_from_motion_lib(
-            env._env,
+            env.env._env,
             SimpleNamespace(model=SimpleNamespace(seq_length=max(window_lengths))),
             device=device,
             add_history_noaction=False,
@@ -46,7 +48,7 @@ class BFMZeroExpertProvider:
         if clip_offsets[-1] != frames.shape[0]:
             raise ValueError("BFM expert clip lengths do not span the frame tensor.")
         priorities = source.priorities.to(device=device, dtype=torch.float32)
-        data_path = Path(env._creation_config.lafan_tail_path)
+        data_path = Path(env.env._creation_config.lafan_tail_path)
         data_hash = _file_hash(data_path)
         offsets_hash = hashlib.sha256(clip_offsets.cpu().numpy().tobytes()).hexdigest()
         schema = ForwardBackwardExpertSchema(
