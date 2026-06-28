@@ -8,9 +8,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+import torch
 from rsl_rl.runners.off_policy_runner import OffPolicyRunner
 
 from humanoidverse.agents.envs.humanoidverse_isaac import HumanoidVerseIsaacConfig
+from humanoidverse.agents.utils import set_seed_everywhere
 
 from .environment import BFM_AUXILIARY_EVIDENCE_NAMES, BFMZeroVecEnv
 from .expert import BFMZeroExpertProvider
@@ -90,6 +92,9 @@ def candidate_config(expert_provider: BFMZeroExpertProvider, *, seed: int) -> di
             "backward_hidden_dims": [256],
             "discriminator_hidden_dims": [1024, 1024, 1024],
             "distribution_cfg": {"class_name": "ClippedGaussianDistribution", "init_std": 0.05},
+            "normalization_type": "exponential",
+            "normalization_eps": 1e-5,
+            "normalization_momentum": 0.01,
             "value_heads": [
                 {
                     "spec": {
@@ -187,6 +192,8 @@ def main() -> None:
     if args.output_dir.exists():
         raise FileExistsError(f"Output directory already exists: {args.output_dir}")
     args.output_dir.mkdir(parents=True)
+    torch.cuda.set_device(torch.device(args.device))
+    set_seed_everywhere(args.seed)
     env = make_native_environment(
         reference_config=args.reference_config,
         data_path=args.data_path,
@@ -200,6 +207,8 @@ def main() -> None:
         device=args.device,
     )
     runner.learn(args.transitions // args.num_envs)
+    torch.save({"model_state_dict": runner.alg.get_policy().state_dict()}, args.output_dir / "policy.pt")
+    env.close()
 
 
 if __name__ == "__main__":

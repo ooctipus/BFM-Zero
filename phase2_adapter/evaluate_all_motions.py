@@ -21,6 +21,8 @@ def main() -> None:
     """Load the native model/environment and write complete immutable evidence."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model_folder", type=Path, required=True)
+    parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--checkpoint_type", choices=("source", "candidate"), default="source")
     parser.add_argument("--data_path", type=Path, required=True)
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--implementation", required=True)
@@ -42,9 +44,16 @@ def main() -> None:
     args.output_dir.mkdir(parents=True)
     torch.cuda.set_device(torch.device(args.device))
     set_seed_everywhere(args.evaluation_seed)
-    model = load_model_from_checkpoint_dir(args.model_folder / "checkpoint", device="cuda")
-    model.to(args.device)
-    model.eval()
+    if args.checkpoint_type == "source":
+        model = load_model_from_checkpoint_dir(args.model_folder / "checkpoint", device="cuda")
+        model.to(args.device)
+        model.eval()
+    else:
+        if args.checkpoint is None:
+            raise ValueError("Candidate evaluation requires --checkpoint.")
+        from .policy import load_candidate_policy
+
+        model = load_candidate_policy(args.checkpoint, args.device)
     with (args.model_folder / "config.json").open() as stream:
         config = json.load(stream)
     env_options = config["env"]
