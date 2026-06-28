@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from rsl_rl.storage.forward_backward_replay import ForwardBackwardTransitionBatch
+from tensordict import TensorDict
 
 from phase2_adapter.environment import (
     BFM_ACTION_DIM,
@@ -15,6 +17,8 @@ from phase2_adapter.environment import (
     BFMZeroVecEnv,
 )
 from phase2_adapter.evaluation import normalize_tracking_metrics
+from phase2_adapter.source import _SourceReplay
+from phase2_adapter.specification import replay_config
 
 
 class _ActionSpace:
@@ -112,6 +116,60 @@ def test_native_reference_is_explicitly_separate_from_correct_terminal() -> None
     assert env.cfg["terminal_profile"] == "native_reference"
     assert "final_obs" not in extras
     assert "final_obs_valid" not in extras
+
+
+def test_replay_terminal_capacity_covers_every_live_timeout() -> None:
+    """A 5,000-step ring needs seventeen slots for deterministic 300-step episodes."""
+    config = replay_config(seed=0)
+
+    assert config["terminal_capacity_per_env"] == 17
+
+
+def test_source_replay_exposes_released_batch_names_from_exact_edges() -> None:
+    """The source learner should consume the same compact logical transitions as RSL-RL."""
+    observations = TensorDict(
+        {name: torch.zeros(2, width) for name, width in BFM_FIELD_WIDTHS.items()},
+        batch_size=[2],
+    )
+    replay = _SourceReplay(
+        observations,
+        num_envs=2,
+        action_dim=BFM_ACTION_DIM,
+        context_dim=4,
+        device="cpu",
+        seed=7,
+    )
+    current = observations
+    for step in range(10):
+        reached = current.clone()
+        reached["state"].fill_(step + 1)
+        replay.add(
+            ForwardBackwardTransitionBatch(
+                observations=current,
+                next_observations=reached,
+                final_observations=reached,
+                actions=torch.full((2, BFM_ACTION_DIM), float(step)),
+                behavior_context=torch.full((2, 4), float(step)),
+                environment_reward=torch.full((2, 1), float(step)),
+                auxiliary_reward_evidence=torch.full((2, len(BFM_AUXILIARY_EVIDENCE_NAMES)), float(step)),
+                terminated=torch.zeros(2, 1, dtype=torch.bool),
+                truncated=torch.zeros(2, 1, dtype=torch.bool),
+                context_changed=torch.zeros(2, 1, dtype=torch.bool),
+                action_applied=torch.ones(2, 1, dtype=torch.bool),
+                final_observation_valid=torch.zeros(2, 1, dtype=torch.bool),
+            )
+        )
+        current = reached
+
+    batch = replay.sample(16)
+
+    assert batch["action"].shape == (16, BFM_ACTION_DIM)
+    assert batch["z"].shape == (16, 4)
+    assert batch["reward"].shape == (16, 1)
+    assert set(batch["observation"]) == set(BFM_FIELD_WIDTHS)
+    assert set(batch["next"]["observation"]) == set(BFM_FIELD_WIDTHS)
+    assert set(batch["aux_rewards"]) == set(BFM_AUXILIARY_EVIDENCE_NAMES)
+    replay.assert_no_errors()
 
 
 def test_tracking_normalization_requires_all_native_motions_and_scalars() -> None:

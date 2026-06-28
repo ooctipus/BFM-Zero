@@ -16,6 +16,7 @@ from humanoidverse.agents.utils import set_seed_everywhere
 
 from .environment import BFM_AUXILIARY_EVIDENCE_NAMES, BFMZeroVecEnv
 from .expert import BFMZeroExpertProvider
+from .specification import observation_routes, replay_config
 
 
 def make_native_environment(
@@ -40,50 +41,13 @@ def candidate_config(expert_provider: BFMZeroExpertProvider, *, seed: int) -> di
     actor = {"hidden_dim": 2048, "hidden_layers": 6, "embedding_layers": 2, "residual": True}
     value = {"hidden_dim": 2048, "hidden_layers": 6, "embedding_layers": 6, "residual": True}
     magnitudes = (0.0, 0.1, 10.0, 0.0, 1.0, 0.4, 4.0, 2.0)
-    routes = {
-        "actor": ["state", "last_action", "history_actor"],
-        "forward": ["state", "privileged_state", "last_action", "history_actor"],
-        "backward": ["state", "privileged_state"],
-        "discriminator": ["state", "privileged_state"],
-        "critic_discriminator": ["state", "privileged_state", "last_action", "history_actor"],
-        "critic_auxiliary": ["state", "privileged_state", "last_action", "history_actor"],
-    }
-    reward_channels = [
-        {
-            "name": "environment",
-            "provider_name": "environment",
-            "source": "environment",
-            "timing": "transition",
-            "context_dependent": False,
-            "sign": 1,
-        },
-        {
-            "name": "discriminator",
-            "provider_name": "discriminator",
-            "source": "recomputed",
-            "timing": "next_state",
-            "context_dependent": True,
-            "sign": 1,
-        },
-    ]
-    reward_channels.extend(
-        {
-            "name": name,
-            "provider_name": name,
-            "source": "stored_evidence",
-            "timing": "transition",
-            "context_dependent": False,
-            "sign": -1,
-        }
-        for name in BFM_AUXILIARY_EVIDENCE_NAMES
-    )
     return {
         "num_steps_per_env": 1,
         "num_updates_per_iteration": 16,
         "random_action_steps": 10_240,
         "save_interval": 9_375,
         "check_for_nan": True,
-        "obs_groups": routes,
+        "obs_groups": observation_routes(),
         "model": {
             "class_name": "rsl_rl.models.forward_backward_model:ForwardBackwardModel",
             "context_dim": 256,
@@ -121,28 +85,7 @@ def candidate_config(expert_provider: BFMZeroExpertProvider, *, seed: int) -> di
                 },
             ],
         },
-        "replay": {
-            "class_name": "rsl_rl.storage.forward_backward_replay:ForwardBackwardReplay",
-            "capacity_steps": 5_000,
-            "terminal_capacity_per_env": 16,
-            "autoreset_mode": "same_step",
-            "environment_reward_name": "environment",
-            "auxiliary_evidence_names": list(BFM_AUXILIARY_EVIDENCE_NAMES),
-            "reward_channels": reward_channels,
-            "history_layout": {
-                "history_field": "history_actor",
-                "history_length": 4,
-                "last_action_field": "last_action",
-                "sources": [
-                    {"observation_name": None, "start": 0, "stop": 29},
-                    {"observation_name": "state", "start": 61, "stop": 64},
-                    {"observation_name": "state", "start": 0, "stop": 29},
-                    {"observation_name": "state", "start": 29, "stop": 58},
-                    {"observation_name": "state", "start": 58, "stop": 61},
-                ],
-            },
-            "seed": seed,
-        },
+        "replay": replay_config(seed),
         "expert": {"provider": expert_provider, "window_lengths": (8, 257)},
         "algorithm": {
             "class_name": "rsl_rl.algorithms.forward_backward:ForwardBackward",
@@ -201,6 +144,7 @@ def main() -> None:
         num_envs=args.num_envs,
         device=args.device,
     )
+    set_seed_everywhere(args.seed)
     runner = OffPolicyRunner(
         env,
         candidate_config(BFMZeroExpertProvider(seed=args.seed), seed=args.seed),

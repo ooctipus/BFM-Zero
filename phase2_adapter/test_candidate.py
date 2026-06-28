@@ -20,7 +20,7 @@ def test_candidate_uses_released_cadence_routes_and_compact_history() -> None:
     assert config["model"]["normalization_eps"] == 1e-5
     assert config["model"]["normalization_momentum"] == 0.01
     assert config["replay"]["capacity_steps"] == 5_000
-    assert config["replay"]["terminal_capacity_per_env"] == 16
+    assert config["replay"]["terminal_capacity_per_env"] == 17
     assert config["replay"]["autoreset_mode"] == "same_step"
     assert config["replay"]["auxiliary_evidence_names"] == list(BFM_AUXILIARY_EVIDENCE_NAMES)
     assert config["replay"]["history_layout"]["history_length"] == 4
