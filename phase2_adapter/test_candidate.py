@@ -26,6 +26,8 @@ def test_candidate_uses_released_cadence_routes_and_compact_history() -> None:
     assert config["replay"]["history_layout"]["history_length"] == 4
     assert config["expert"]["window_lengths"] == (8, 257)
     assert config["algorithm"]["rollout_expert_fraction"] == 0.5
+    assert config["algorithm"]["random_action_range"] == (-5.0, 5.0)
+    assert config["model"]["value_heads"][1]["spec"]["reward_composition"] == "scalar"
     assert config["torch_compile_mode"] is None
 
 

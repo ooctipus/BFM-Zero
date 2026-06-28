@@ -78,6 +78,7 @@ def candidate_config(expert_provider: BFMZeroExpertProvider, *, seed: int) -> di
                         "kind": "critic",
                         "route": "critic_auxiliary",
                         "reward_channels": list(BFM_AUXILIARY_EVIDENCE_NAMES),
+                        "reward_composition": "scalar",
                         "ensemble_size": 2,
                         "has_target": True,
                     },
@@ -103,6 +104,7 @@ def candidate_config(expert_provider: BFMZeroExpertProvider, *, seed: int) -> di
             "context_buffer_capacity": 8_192,
             "rollout_context_refresh_steps": 100,
             "rollout_expert_fraction": 0.5,
+            "random_action_range": (-5.0, 5.0),
             "rollout_expert_steps": 250,
             "rollout_expert_context_steps": 8,
             "value_cfg": {
