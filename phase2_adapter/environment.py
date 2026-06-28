@@ -124,6 +124,7 @@ class BFMZeroVecEnv(VecEnv):
         extras: dict[str, Any] = {
             "time_outs": truncated,
             "auxiliary_reward_evidence": self._auxiliary_evidence(info),
+            "episode_steps": self.episode_length_buf,
         }
         if self._capture is not None:
             extras["final_obs"] = TensorDict(
