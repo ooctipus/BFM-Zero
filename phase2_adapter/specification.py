@@ -52,6 +52,7 @@ def replay_config(seed: int) -> dict[str, object]:
         "class_name": "rsl_rl.storage.forward_backward_replay:ForwardBackwardReplay",
         "capacity_steps": 5_000,
         "terminal_capacity_per_env": 17,
+        "sampling": "episode_uniform",
         "autoreset_mode": "same_step",
         "environment_reward_name": "environment",
         "auxiliary_evidence_names": list(BFM_AUXILIARY_EVIDENCE_NAMES),
@@ -59,9 +60,10 @@ def replay_config(seed: int) -> dict[str, object]:
         "history_layout": {
             "history_field": "history_actor",
             "history_length": 4,
-            "last_action_field": "last_action",
+            "last_action_field": None,
+            "include_seed_observations": False,
             "sources": [
-                {"observation_name": None, "start": 0, "stop": 29},
+                {"observation_name": "last_action", "start": 0, "stop": 29},
                 {"observation_name": "state", "start": 61, "stop": 64},
                 {"observation_name": "state", "start": 0, "stop": 29},
                 {"observation_name": "state", "start": 29, "stop": 58},

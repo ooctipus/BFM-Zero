@@ -24,9 +24,12 @@ def test_candidate_uses_released_cadence_routes_and_compact_history() -> None:
     assert config["model"]["normalization_momentum"] == 0.01
     assert config["replay"]["capacity_steps"] == 5_000
     assert config["replay"]["terminal_capacity_per_env"] == 17
+    assert config["replay"]["sampling"] == "episode_uniform"
     assert config["replay"]["autoreset_mode"] == "same_step"
     assert config["replay"]["auxiliary_evidence_names"] == list(BFM_AUXILIARY_EVIDENCE_NAMES)
     assert config["replay"]["history_layout"]["history_length"] == 4
+    assert config["replay"]["history_layout"]["last_action_field"] is None
+    assert config["replay"]["history_layout"]["sources"][0]["observation_name"] == "last_action"
     assert config["expert"]["window_lengths"] == (8, 257)
     assert config["algorithm"]["rollout_expert_fraction"] == 0.5
     assert config["algorithm"]["random_action_range"] == (-5.0, 5.0)

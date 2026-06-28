@@ -134,6 +134,9 @@ def test_replay_terminal_capacity_covers_every_live_timeout() -> None:
     config = replay_config(seed=0)
 
     assert config["terminal_capacity_per_env"] == 17
+    assert config["sampling"] == "episode_uniform"
+    assert config["history_layout"]["last_action_field"] is None
+    assert config["history_layout"]["sources"][0]["observation_name"] == "last_action"
 
 
 def test_source_replay_exposes_released_batch_names_from_exact_edges() -> None:
@@ -172,14 +175,54 @@ def test_source_replay_exposes_released_batch_names_from_exact_edges() -> None:
         )
         current = reached
 
+    sample_random = replay.storage.sample_random
+    requested_batch_sizes = []
+
+    def record_sample(batch_size: int):
+        requested_batch_sizes.append(batch_size)
+        return sample_random(batch_size)
+
+    replay.storage.sample_random = record_sample
     batch = replay.sample(16)
 
+    assert requested_batch_sizes == [16]
     assert batch["action"].shape == (16, BFM_ACTION_DIM)
     assert batch["z"].shape == (16, 4)
     assert batch["reward"].shape == (16, 1)
     assert set(batch["observation"]) == set(BFM_FIELD_WIDTHS)
     assert set(batch["next"]["observation"]) == set(BFM_FIELD_WIDTHS)
     assert set(batch["aux_rewards"]) == set(BFM_AUXILIARY_EVIDENCE_NAMES)
+
+    reset_observations = observations.clone()
+    reset_observations["state"].fill_(100.0)
+    replay.process_env_reset(reset_observations)
+    boundary = replay.storage.sample(torch.full((2,), 9), torch.arange(2))
+    assert torch.all(boundary.valid)
+    assert torch.all(boundary.truncated)
+    assert torch.all(boundary.next_observations["state"] == 10.0)
+
+    reached_after_reset = reset_observations.clone()
+    reached_after_reset["state"].fill_(101.0)
+    replay.add(
+        ForwardBackwardTransitionBatch(
+            observations=reset_observations,
+            next_observations=reached_after_reset,
+            final_observations=reached_after_reset,
+            actions=torch.zeros(2, BFM_ACTION_DIM),
+            behavior_context=torch.zeros(2, 4),
+            environment_reward=torch.zeros(2, 1),
+            auxiliary_reward_evidence=torch.zeros(2, len(BFM_AUXILIARY_EVIDENCE_NAMES)),
+            terminated=torch.zeros(2, 1, dtype=torch.bool),
+            truncated=torch.zeros(2, 1, dtype=torch.bool),
+            context_changed=torch.zeros(2, 1, dtype=torch.bool),
+            action_applied=torch.ones(2, 1, dtype=torch.bool),
+            final_observation_valid=torch.zeros(2, 1, dtype=torch.bool),
+        )
+    )
+    after_reset = replay.storage.sample(torch.full((2,), 10), torch.arange(2))
+    assert torch.all(after_reset.valid)
+    assert torch.all(after_reset.observations["state"] == 100.0)
+    assert torch.all(after_reset.next_observations["state"] == 101.0)
     replay.assert_no_errors()
 
 

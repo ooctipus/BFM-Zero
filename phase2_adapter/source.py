@@ -63,7 +63,8 @@ class _SourceReplay:
         history_layout = ForwardBackwardHistoryLayout(
             history_field=str(history_options["history_field"]),
             history_length=int(history_options["history_length"]),
-            last_action_field=str(history_options["last_action_field"]),
+            last_action_field=history_options["last_action_field"],
+            include_seed_observations=bool(history_options["include_seed_observations"]),
             sources=tuple(ForwardBackwardHistoryLayout.Source(**source) for source in history_options["sources"]),
         )
         self.storage = ForwardBackwardReplay(
@@ -75,6 +76,7 @@ class _SourceReplay:
             reward_schema=reward_schema,
             device=device,
             history_layout=history_layout,
+            sampling=str(options["sampling"]),
             seed=seed,
         )
 
@@ -83,16 +85,19 @@ class _SourceReplay:
         self.storage.add(transition)
 
     def sample(self, batch_size: int) -> dict[str, Any]:
-        """Sample uniformly from logical transitions and expose released field names."""
-        while True:
-            batch = self.storage.sample_random(2 * batch_size)
-            indices = batch.valid.squeeze(-1).nonzero(as_tuple=False).squeeze(-1)
-            if indices.numel() >= batch_size:
-                return self._source_batch(batch, indices[:batch_size])
+        """Sample one strict logical batch and expose released field names."""
+        return self._source_batch(self.storage.sample_random(batch_size))
 
     def assert_no_errors(self) -> None:
         """Fail at an update boundary if collection violated the shared contract."""
         self.storage.assert_no_errors()
+
+    def process_env_reset(self, observations: TensorDict) -> None:
+        """Close every latest edge and seed the externally reset stream."""
+        self.storage.process_env_reset(
+            observations,
+            torch.ones(self.storage.num_envs, dtype=torch.bool, device=self.storage.device),
+        )
 
     def __len__(self) -> int:
         return self.storage.num_transitions
@@ -101,22 +106,22 @@ class _SourceReplay:
         return len(self) == 0
 
     @staticmethod
-    def _source_batch(batch: ForwardBackwardReplayBatch, indices: torch.Tensor) -> dict[str, Any]:
-        observations = {name: value[indices] for name, value in batch.observations.items()}
-        next_observations = {name: value[indices] for name, value in batch.next_observations.items()}
+    def _source_batch(batch: ForwardBackwardReplayBatch) -> dict[str, Any]:
+        observations = dict(batch.observations.items())
+        next_observations = dict(batch.next_observations.items())
         auxiliary = {
-            name: batch.auxiliary_reward_evidence[indices, column : column + 1] for column, name in enumerate(BFM_AUXILIARY_EVIDENCE_NAMES)
+            name: batch.auxiliary_reward_evidence[:, column : column + 1] for column, name in enumerate(BFM_AUXILIARY_EVIDENCE_NAMES)
         }
         return {
             "observation": observations,
-            "action": batch.actions[indices],
-            "z": batch.behavior_context[indices],
-            "reward": batch.environment_reward[indices],
+            "action": batch.actions,
+            "z": batch.behavior_context,
+            "reward": batch.environment_reward,
             "aux_rewards": auxiliary,
             "next": {
                 "observation": next_observations,
-                "terminated": batch.terminated[indices],
-                "truncated": batch.truncated[indices],
+                "terminated": batch.terminated,
+                "truncated": batch.truncated,
             },
         }
 
@@ -134,7 +139,7 @@ def _source_curriculum_event(
     *,
     transition: int,
     env: BFMZeroVecEnv | None = None,
-) -> None:
+) -> TensorDict | None:
     """Apply the same native tracking curriculum to the released learner."""
     model = workspace.agent._model
     motion_ids = torch.as_tensor(expert.motion_ids, dtype=torch.long, device=workspace.agent.device)
@@ -163,7 +168,8 @@ def _source_curriculum_event(
     finally:
         model.train(was_training)
     if env is not None:
-        env.reset()
+        return env.reset()
+    return None
 
 
 def _train(workspace: Workspace) -> None:
@@ -256,7 +262,11 @@ def _train(workspace: Workspace) -> None:
 
             if completed % cfg.checkpoint_every_steps == 0:
                 _save_evaluation_checkpoint(agent._model, workspace.work_dir, completed)
-                _source_curriculum_event(workspace, expert, transition=completed, env=env)
+                reset_observations = _source_curriculum_event(workspace, expert, transition=completed, env=env)
+                if reset_observations is None:
+                    raise RuntimeError("A post-training curriculum event must reset the behavior environment.")
+                replay.process_env_reset(reset_observations)
+                observations = reset_observations
 
         replay.assert_no_errors()
         agent.save(str(workspace.work_dir / "checkpoint"))

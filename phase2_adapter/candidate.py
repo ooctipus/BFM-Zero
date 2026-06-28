@@ -162,7 +162,12 @@ class _BFMEvaluationCheckpointRunner(OffPolicyRunner):
             )
         finally:
             model.train(was_training)
-        self.env.reset()
+        observations = self.env.reset()
+        if self.collected_transitions:
+            self.alg.process_env_reset(
+                observations,
+                torch.ones(self.env.num_envs, dtype=torch.bool, device=self.device),
+            )
 
 
 def main() -> None:
