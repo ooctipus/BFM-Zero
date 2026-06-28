@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 import math
+import random
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
+import numpy as np
 import torch
 
 from .evaluation import EXPECTED_BFM_MOTIONS, run_native_tracking
@@ -58,7 +61,8 @@ def run_curriculum_event(
     update_expert_priorities: Callable[[torch.Tensor], None],
 ) -> torch.Tensor:
     """Measure tracking, update native motion sampling, and persist the training input."""
-    metrics, duration = run_native_tracking(agent_or_model, env=env, num_envs=num_envs)
+    with _preserve_evaluator_rng(device):
+        metrics, duration = run_native_tracking(agent_or_model, env=env, num_envs=num_envs)
     priorities = tracking_priorities(metrics, device)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -91,6 +95,23 @@ def run_curriculum_event(
         temporary.unlink(missing_ok=True)
         raise
     return priorities
+
+
+@contextmanager
+def _preserve_evaluator_rng(device: str | torch.device):
+    """Prevent evaluator mechanics from becoming an undeclared training input."""
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    torch_device = torch.device(device)
+    cuda_devices = []
+    if torch_device.type == "cuda":
+        cuda_devices = [torch_device.index if torch_device.index is not None else torch.cuda.current_device()]
+    try:
+        with torch.random.fork_rng(devices=cuda_devices):
+            yield
+    finally:
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
 
 
 def _json_default(value: Any) -> Any:

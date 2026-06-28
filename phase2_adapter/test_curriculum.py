@@ -8,8 +8,10 @@
 from __future__ import annotations
 
 import json
+import random
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -72,3 +74,40 @@ def test_curriculum_event_updates_native_sampling_and_writes_once(tmp_path, monk
             device="cpu",
             update_expert_priorities=lambda _values: None,
         )
+
+
+def test_curriculum_evaluator_cannot_advance_training_rng(tmp_path, monkeypatch) -> None:
+    """Only declared sampling weights, not evaluator mechanics, may affect training state."""
+    metrics = _metrics()
+
+    def consume_rng(*_args, **_kwargs):
+        random.random()
+        np.random.rand()
+        torch.rand(1)
+        return metrics, 1.0
+
+    monkeypatch.setattr("phase2_adapter.curriculum.run_native_tracking", consume_rng)
+    motion_lib = SimpleNamespace(update_sampling_weight_by_id=lambda **_kwargs: None)
+    env = SimpleNamespace(_env=SimpleNamespace(_motion_lib=motion_lib))
+    random.seed(7)
+    np.random.seed(7)
+    torch.manual_seed(7)
+    expected = (random.random(), np.random.rand(), torch.rand(1))
+    random.seed(7)
+    np.random.seed(7)
+    torch.manual_seed(7)
+
+    run_curriculum_event(
+        object(),
+        env=env,
+        num_envs=1024,
+        transition=0,
+        output_dir=tmp_path,
+        device="cpu",
+        update_expert_priorities=lambda _values: None,
+    )
+    actual = (random.random(), np.random.rand(), torch.rand(1))
+
+    assert actual[0] == expected[0]
+    assert actual[1] == expected[1]
+    torch.testing.assert_close(actual[2], expected[2])
