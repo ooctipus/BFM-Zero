@@ -92,6 +92,7 @@ def candidate_config(expert_provider: BFMZeroExpertProvider, *, seed: int) -> di
             "backward_hidden_dims": [256],
             "discriminator_hidden_dims": [1024, 1024, 1024],
             "distribution_cfg": {"class_name": "ClippedGaussianDistribution", "init_std": 0.05},
+            "initialization_type": "orthogonal",
             "normalization_type": "exponential",
             "normalization_eps": 1e-5,
             "normalization_momentum": 0.01,
