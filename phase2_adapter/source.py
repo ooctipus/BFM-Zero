@@ -120,6 +120,13 @@ class _SourceReplay:
         }
 
 
+def _save_evaluation_checkpoint(model: Any, work_dir: Path, transition: int) -> None:
+    """Save one immutable source policy at an evaluation transition."""
+    checkpoint_root = work_dir / "evaluation_checkpoints" / str(transition)
+    checkpoint_root.mkdir(parents=True, exist_ok=False)
+    model.save(str(checkpoint_root / "model"))
+
+
 def _train(workspace: Workspace) -> None:
     """Run the released update equations over exact bridge transitions."""
     cfg = workspace.cfg
@@ -208,8 +215,7 @@ def _train(workspace: Workspace) -> None:
                 interval_start = time.perf_counter()
 
             if completed % cfg.checkpoint_every_steps == 0:
-                checkpoint = workspace.work_dir / "evaluation_checkpoints" / str(completed) / "model"
-                agent._model.save(str(checkpoint))
+                _save_evaluation_checkpoint(agent._model, workspace.work_dir, completed)
 
         replay.assert_no_errors()
         agent.save(str(workspace.work_dir / "checkpoint"))

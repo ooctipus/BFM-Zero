@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -17,7 +18,7 @@ from phase2_adapter.environment import (
     BFMZeroVecEnv,
 )
 from phase2_adapter.evaluation import normalize_tracking_metrics
-from phase2_adapter.source import _SourceReplay
+from phase2_adapter.source import _save_evaluation_checkpoint, _SourceReplay
 from phase2_adapter.specification import replay_config
 
 
@@ -170,6 +171,23 @@ def test_source_replay_exposes_released_batch_names_from_exact_edges() -> None:
     assert set(batch["next"]["observation"]) == set(BFM_FIELD_WIDTHS)
     assert set(batch["aux_rewards"]) == set(BFM_AUXILIARY_EVIDENCE_NAMES)
     replay.assert_no_errors()
+
+
+def test_source_milestone_checkpoint_creates_one_immutable_parent(tmp_path: Path) -> None:
+    """The adapter should own parent creation before the research model saves."""
+
+    class Model:
+        def save(self, path: str) -> None:
+            destination = Path(path)
+            assert destination.parent.is_dir()
+            destination.mkdir(exist_ok=True)
+            (destination / "model.safetensors").touch()
+
+    _save_evaluation_checkpoint(Model(), tmp_path, 12_288)
+
+    assert (tmp_path / "evaluation_checkpoints" / "12288" / "model" / "model.safetensors").is_file()
+    with pytest.raises(FileExistsError):
+        _save_evaluation_checkpoint(Model(), tmp_path, 12_288)
 
 
 def test_tracking_normalization_requires_all_native_motions_and_scalars() -> None:
