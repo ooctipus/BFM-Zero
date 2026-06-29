@@ -187,6 +187,7 @@ def _train(workspace: Workspace) -> None:
         cfg.agent,
         device=cfg.buffer_device,
     )
+    _save_evaluation_checkpoint(agent._model, workspace.work_dir, 0)
     _source_curriculum_event(workspace, expert, transition=0)
     env = BFMZeroVecEnv(workspace.train_env, terminal_profile="correct_terminal", device=cfg.env.device)
     observations = env.get_observations()

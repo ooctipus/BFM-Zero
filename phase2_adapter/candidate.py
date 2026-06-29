@@ -142,7 +142,7 @@ def candidate_config(
 
 
 class _BFMEvaluationCheckpointRunner(OffPolicyRunner):
-    """Write compact milestone policies and one final recovery checkpoint."""
+    """Write compact evaluation policies and one final recovery checkpoint."""
 
     def __init__(self, *args, final_transitions: int, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -152,14 +152,18 @@ class _BFMEvaluationCheckpointRunner(OffPolicyRunner):
         if self.logger.log_dir is None:
             raise RuntimeError("BFM milestone checkpoints require a log directory.")
         destination = Path(self.logger.log_dir) / "evaluation_checkpoints"
+        self.save_evaluation_checkpoint(destination)
+        if self.collected_transitions == self._final_transitions:
+            super().save(path, infos)
+
+    def save_evaluation_checkpoint(self, destination: Path) -> None:
+        """Write the current policy and apply its declared curriculum event."""
         destination.mkdir(exist_ok=True)
         policy = destination / f"{self.collected_transitions}.pt"
         temporary = policy.with_suffix(".tmp")
         torch.save({"model_state_dict": self.alg.get_policy().state_dict()}, temporary)
         temporary.replace(policy)
         self.curriculum_event()
-        if self.collected_transitions == self._final_transitions:
-            super().save(path, infos)
 
     def curriculum_event(self) -> None:
         """Apply one bridge-owned tracking curriculum update."""
@@ -235,7 +239,7 @@ def main() -> None:
         device=args.device,
         final_transitions=args.transitions,
     )
-    runner.curriculum_event()
+    runner.save_evaluation_checkpoint(args.output_dir / "evaluation_checkpoints")
     runner.learn(args.transitions // args.num_envs)
     torch.save({"model_state_dict": runner.alg.get_policy().state_dict()}, args.output_dir / "policy.pt")
     env.close()

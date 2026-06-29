@@ -120,6 +120,13 @@ def test_candidate_keeps_compact_milestones_and_one_full_checkpoint(tmp_path, mo
     runner._final_transitions = 19_200_000
     curriculum_events: list[int] = []
     runner.curriculum_event = lambda: curriculum_events.append(runner.collected_transitions)
+    runner.collected_transitions = 0
+    runner.save_evaluation_checkpoint(tmp_path / "evaluation_checkpoints")
+    initial = tmp_path / "evaluation_checkpoints" / "0.pt"
+
+    assert initial.is_file()
+    assert full_saves == []
+    assert curriculum_events == [0]
 
     runner.collected_transitions = 9_600_000
     runner.save(str(tmp_path / "full.pt"))
@@ -128,7 +135,7 @@ def test_candidate_keeps_compact_milestones_and_one_full_checkpoint(tmp_path, mo
     assert first.is_file()
     assert "model_state_dict" in torch.load(first, weights_only=True)
     assert full_saves == []
-    assert curriculum_events == [9_600_000]
+    assert curriculum_events == [0, 9_600_000]
 
     runner.collected_transitions = 19_200_000
     runner.save(str(tmp_path / "full.pt"), {"final": True})
@@ -136,4 +143,4 @@ def test_candidate_keeps_compact_milestones_and_one_full_checkpoint(tmp_path, mo
 
     assert second.is_file()
     assert full_saves == [(str(tmp_path / "full.pt"), {"final": True})]
-    assert curriculum_events == [9_600_000, 19_200_000]
+    assert curriculum_events == [0, 9_600_000, 19_200_000]
