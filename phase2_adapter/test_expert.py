@@ -21,10 +21,12 @@ def test_expert_provider_reads_the_wrapped_native_motion_environment(tmp_path, m
         _creation_config=SimpleNamespace(lafan_tail_path=str(data_path)),
     )
     env = SimpleNamespace(env=native)
+    state = torch.zeros(4, BFM_FIELD_WIDTHS["state"])
+    state[:, 0] = torch.arange(4)
     source = SimpleNamespace(
         storage={
             "observation": {
-                "state": torch.zeros(4, BFM_FIELD_WIDTHS["state"]),
+                "state": state,
                 "privileged_state": torch.zeros(4, BFM_FIELD_WIDTHS["privileged_state"]),
             }
         },
@@ -51,3 +53,8 @@ def test_expert_provider_reads_the_wrapped_native_motion_environment(tmp_path, m
         BFM_FIELD_WIDTHS["state"] + BFM_FIELD_WIDTHS["privileged_state"],
     )
     assert expert.schema.num_clips == 1
+
+    batch = expert.sample(16, 2)
+    assert batch.frame_indices.shape == (16, 3)
+    torch.testing.assert_close(batch.observations[..., 0], batch.frame_indices[:, :-1].float())
+    torch.testing.assert_close(batch.next_observations[..., 0], batch.frame_indices[:, 1:].float())

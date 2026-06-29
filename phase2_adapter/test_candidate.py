@@ -45,6 +45,8 @@ def test_candidate_uses_released_cadence_routes_and_compact_history() -> None:
     assert config["replay"]["terminal_capacity_per_env"] == 17
     assert config["replay"]["sampling"] == "episode_uniform"
     assert config["replay"]["autoreset_mode"] == "same_step"
+    discriminator_channel = next(channel for channel in config["replay"]["reward_channels"] if channel["name"] == "discriminator")
+    assert discriminator_channel["timing"] == "state"
     assert config["replay"]["auxiliary_evidence_names"] == list(BFM_AUXILIARY_EVIDENCE_NAMES)
     assert config["replay"]["history_layout"]["history_length"] == 4
     assert config["replay"]["history_layout"]["last_action_field"] is None

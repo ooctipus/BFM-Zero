@@ -48,7 +48,7 @@ def replay_config(seed: int) -> dict[str, object]:
             "name": "discriminator",
             "provider_name": "discriminator",
             "source": "recomputed",
-            "timing": "next_state",
+            "timing": "state",
             "context_dependent": True,
             "sign": 1,
         },
