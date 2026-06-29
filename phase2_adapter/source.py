@@ -191,9 +191,38 @@ def _source_curriculum_event(
     return None
 
 
-def _train(workspace: Workspace, schedule: BFMTrainingSchedule) -> None:
+class SourceTrainingObserver:
+    """Observe source-loop iteration boundaries without owning training state."""
+
+    def observe_iteration_start(self, iteration: int, start_transitions: int) -> None:
+        """Observe the boundary immediately before collection."""
+
+    def observe_iteration_learning_complete(self, iteration: int, end_transitions: int) -> None:
+        """Observe the boundary immediately after learning."""
+
+    def observe_iteration_complete(
+        self,
+        iteration: int,
+        end_transitions: int,
+        collection_seconds: float,
+        learning_seconds: float,
+    ) -> None:
+        """Observe one completed iteration and its unsynchronized decomposition."""
+
+
+def _train(
+    workspace: Workspace,
+    schedule: BFMTrainingSchedule,
+    *,
+    observer: SourceTrainingObserver | None = None,
+    save_final_checkpoint: bool = True,
+) -> None:
     """Run the released update equations over exact bridge transitions."""
     cfg = workspace.cfg
+    if not isinstance(save_final_checkpoint, bool):
+        raise ValueError("save_final_checkpoint must be boolean.")
+    if observer is None:
+        observer = SourceTrainingObserver()
     agent = workspace.agent
     expert = load_expert_trajectories_from_motion_lib(
         workspace.train_env._env,
@@ -223,6 +252,8 @@ def _train(workspace: Workspace, schedule: BFMTrainingSchedule) -> None:
     try:
         for vector_step in range(cfg.num_env_steps // cfg.online_parallel_envs):
             transition_count = vector_step * cfg.online_parallel_envs
+            iteration_started = time.perf_counter()
+            observer.observe_iteration_start(vector_step, transition_count)
             with torch.no_grad():
                 step_count = env.episode_length_buf.reshape(cfg.online_parallel_envs, 1)
                 context = agent.maybe_update_rollout_context(
@@ -259,6 +290,7 @@ def _train(workspace: Workspace, schedule: BFMTrainingSchedule) -> None:
                 )
             )
             observations = next_observations
+            collection_finished = time.perf_counter()
 
             if transition_count > cfg.num_seed_steps:
                 replay.assert_no_errors()
@@ -272,6 +304,14 @@ def _train(workspace: Workspace, schedule: BFMTrainingSchedule) -> None:
                     num_metric_updates += 1
 
             completed = transition_count + cfg.online_parallel_envs
+            observer.observe_iteration_learning_complete(vector_step, completed)
+            learning_finished = time.perf_counter()
+            observer.observe_iteration_complete(
+                vector_step,
+                completed,
+                collection_finished - iteration_started,
+                learning_finished - collection_finished,
+            )
             if totals is not None and completed % cfg.log_every_updates == 0:
                 summary = {name: round((value / num_metric_updates).mean().item(), 6) for name, value in sorted(totals.items())}
                 summary["duration [minutes]"] = (time.perf_counter() - start) / 60
@@ -290,7 +330,8 @@ def _train(workspace: Workspace, schedule: BFMTrainingSchedule) -> None:
                 observations = reset_observations
 
         replay.assert_no_errors()
-        agent.save(str(workspace.work_dir / "checkpoint"))
+        if save_final_checkpoint:
+            agent.save(str(workspace.work_dir / "checkpoint"))
     finally:
         env.close()
 

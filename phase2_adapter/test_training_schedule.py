@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from phase2_adapter import source
 from phase2_adapter.candidate import _initialize_evaluation_schedule, candidate_config
@@ -164,6 +165,109 @@ def test_source_checkpoint_publication_is_atomic_and_rejects_stale_targets(tmp_p
     stale.mkdir()
     with pytest.raises(FileExistsError, match="target is not empty"):
         source._save_evaluation_checkpoint(Model(), tmp_path, 19_200_000)
+
+
+def test_source_training_observer_and_final_checkpoint_switch(tmp_path, monkeypatch) -> None:
+    """Source profiling should observe the canonical loop without copying or saving it."""
+    events = []
+    saves = []
+    monkeypatch.setattr(source, "load_expert_trajectories_from_motion_lib", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(source, "_source_curriculum_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(source, "ForwardBackwardTransitionBatch", lambda **kwargs: kwargs)
+
+    class Environment:
+        episode_length_buf = torch.zeros(1)
+
+        def get_observations(self):
+            return {}
+
+        def step(self, _actions):
+            return (
+                {},
+                torch.zeros(1),
+                torch.zeros(1, dtype=torch.bool),
+                {
+                    "time_outs": torch.zeros(1, dtype=torch.bool),
+                    "final_obs": {},
+                    "auxiliary_reward_evidence": torch.zeros(1, 5),
+                    "final_obs_valid": torch.ones(1, dtype=torch.bool),
+                },
+            )
+
+        def close(self) -> None:
+            events.append("close")
+
+    replay = SimpleNamespace(add=lambda _transition: None, assert_no_errors=lambda: None)
+    monkeypatch.setattr(source, "BFMZeroVecEnv", lambda *_args, **_kwargs: Environment())
+    monkeypatch.setattr(source, "_SourceReplay", lambda *_args, **_kwargs: replay)
+
+    class Observer(source.SourceTrainingObserver):
+        def observe_iteration_start(self, iteration: int, start_transitions: int) -> None:
+            events.append(("start", iteration, start_transitions))
+
+        def observe_iteration_learning_complete(self, iteration: int, end_transitions: int) -> None:
+            events.append(("learning", iteration, end_transitions))
+
+        def observe_iteration_complete(
+            self,
+            iteration: int,
+            end_transitions: int,
+            collection_seconds: float,
+            learning_seconds: float,
+        ) -> None:
+            assert collection_seconds >= 0.0
+            assert learning_seconds >= 0.0
+            events.append(("complete", iteration, end_transitions))
+
+    agent = SimpleNamespace(
+        _model=object(),
+        device="cpu",
+        maybe_update_rollout_context=lambda **_kwargs: torch.zeros(1, 256),
+        save=saves.append,
+    )
+    config = SimpleNamespace(
+        agent=SimpleNamespace(model=SimpleNamespace(archi=SimpleNamespace(z_dim=256))),
+        buffer_device="cpu",
+        online_parallel_envs=1,
+        env=SimpleNamespace(device="cpu"),
+        num_env_steps=1,
+        num_seed_steps=10,
+        num_agent_updates=16,
+        log_every_updates=100,
+        checkpoint_every_steps=2,
+        seed=4728,
+    )
+    workspace = SimpleNamespace(
+        cfg=config,
+        agent=agent,
+        train_env=SimpleNamespace(
+            _env=object(),
+            action_space=SimpleNamespace(sample=lambda: torch.zeros(1, 29)),
+        ),
+        work_dir=tmp_path,
+        action_dim=29,
+    )
+    schedule = resolve_training_schedule(
+        transitions=1,
+        num_envs=1,
+        evaluation_checkpoint_every_transitions=1,
+        save_initial_evaluation_checkpoint=False,
+    )
+
+    source._train(
+        workspace,
+        schedule,
+        observer=Observer(),
+        save_final_checkpoint=False,
+    )
+
+    assert events == [
+        ("start", 0, 0),
+        ("learning", 0, 1),
+        ("complete", 0, 1),
+        "close",
+    ]
+    assert saves == []
 
 
 def test_source_checkpoint_failure_never_publishes_partial_directory(tmp_path) -> None:
