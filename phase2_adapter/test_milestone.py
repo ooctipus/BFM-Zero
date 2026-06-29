@@ -106,7 +106,7 @@ def test_sink_rejects_export_that_changes_training_rng(tmp_path: Path) -> None:
         torch.set_rng_state(original)
 
     assert lifecycle.publications == []
-    assert (sink.run_root / "compact_states/0.pt.RNG_CHANGED").is_file()
+    assert (sink.run_root / "compact_states/0.safetensors.RNG_CHANGED").is_file()
 
 
 def test_source_and_candidate_export_one_file_without_rng_change(tmp_path: Path) -> None:
@@ -227,7 +227,7 @@ def test_sink_resumes_an_existing_handoff_before_waiting_on_its_predecessor(tmp_
     """A resumed producer should revalidate its own publication instead of deadlocking."""
     lifecycle = _Lifecycle()
     sink = _sink(tmp_path, lifecycle)
-    destination = sink.run_root / "compact_states/0.pt"
+    destination = sink.run_root / "compact_states/0.safetensors"
     destination.parent.mkdir(parents=True)
     destination.write_bytes(b"state")
     (sink.run_root / "checkpoint_handoffs/transition_0").mkdir(parents=True)

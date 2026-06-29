@@ -66,7 +66,7 @@ class MilestoneSink:
         except ValueError as error:
             raise ValueError(f"Transition {transition} is outside the milestone schedule.") from error
         previous = self.transitions[index - 1] if index else None
-        destination = self.run_root / "compact_states" / f"{transition}.pt"
+        destination = self.run_root / "compact_states" / f"{transition}.safetensors"
         handoff = self.run_root / "checkpoint_handoffs" / f"transition_{transition}"
         rng_changed = destination.parent / f"{destination.name}.RNG_CHANGED"
         assert self.lifecycle is not None
