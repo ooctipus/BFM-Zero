@@ -191,7 +191,7 @@ def _source_curriculum_event(
     return None
 
 
-def _train(workspace: Workspace) -> None:
+def _train(workspace: Workspace, schedule: BFMTrainingSchedule) -> None:
     """Run the released update equations over exact bridge transitions."""
     cfg = workspace.cfg
     agent = workspace.agent
@@ -200,6 +200,8 @@ def _train(workspace: Workspace) -> None:
         cfg.agent,
         device=cfg.buffer_device,
     )
+    if schedule.save_initial_evaluation_checkpoint:
+        _save_evaluation_checkpoint(agent._model, workspace.work_dir, 0)
     _source_curriculum_event(workspace, expert, transition=0)
     env = BFMZeroVecEnv(workspace.train_env, terminal_profile="correct_terminal", device=cfg.env.device)
     observations = env.get_observations()
@@ -349,6 +351,7 @@ def main() -> None:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--log_every_transitions", type=int, default=384_000)
     parser.add_argument("--evaluation_checkpoint_every_transitions", type=int, default=9_600_000)
+    parser.add_argument("--save_initial_evaluation_checkpoint", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--model_profile",
@@ -360,13 +363,14 @@ def main() -> None:
         transitions=args.transitions,
         num_envs=args.num_envs,
         evaluation_checkpoint_every_transitions=args.evaluation_checkpoint_every_transitions,
+        save_initial_evaluation_checkpoint=args.save_initial_evaluation_checkpoint,
     )
     if args.output_dir.exists():
         raise FileExistsError(f"Output directory already exists: {args.output_dir}")
     torch.cuda.set_device(torch.device(args.device))
     set_seed_everywhere(args.seed)
     workspace = Workspace(_load_config(args, schedule))
-    _train(workspace)
+    _train(workspace, schedule)
 
 
 if __name__ == "__main__":

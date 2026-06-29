@@ -124,7 +124,8 @@ def test_candidate_keeps_compact_milestones_and_one_full_checkpoint(tmp_path, mo
     curriculum_events: list[int] = []
     runner.curriculum_event = lambda: curriculum_events.append(runner.collected_transitions)
     runner.collected_transitions = 0
-    runner.save_evaluation_checkpoint(tmp_path / "evaluation_checkpoints")
+    runner.publish_evaluation_checkpoint(tmp_path / "evaluation_checkpoints")
+    runner.curriculum_event()
     initial = tmp_path / "evaluation_checkpoints" / "0.pt"
 
     assert initial.is_file()

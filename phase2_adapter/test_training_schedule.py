@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from phase2_adapter import source
-from phase2_adapter.candidate import candidate_config
+from phase2_adapter.candidate import _initialize_evaluation_schedule, candidate_config
 from phase2_adapter.specification import resolve_training_schedule
 
 
@@ -17,6 +17,7 @@ def test_training_schedule_derives_shared_iteration_cadence() -> None:
         transitions=28_800_000,
         num_envs=1_024,
         evaluation_checkpoint_every_transitions=9_600_000,
+        save_initial_evaluation_checkpoint=False,
     )
 
     assert schedule.total_iterations == 28_125
@@ -46,6 +47,7 @@ def test_training_schedule_rejects_nonintegral_or_final_misaligned_contracts(
             transitions=transitions,
             num_envs=num_envs,
             evaluation_checkpoint_every_transitions=cadence,
+            save_initial_evaluation_checkpoint=False,
         )
 
 
@@ -60,6 +62,7 @@ def test_source_and_candidate_consume_the_same_derived_schedule(tmp_path, monkey
         transitions=28_800_000,
         num_envs=1_024,
         evaluation_checkpoint_every_transitions=9_600_000,
+        save_initial_evaluation_checkpoint=False,
     )
     candidate = candidate_config(lambda *_args, **_kwargs: None, seed=4728, save_interval=schedule.save_interval)
     assert candidate["save_interval"] == schedule.save_interval
@@ -90,11 +93,14 @@ def test_source_and_candidate_consume_the_same_derived_schedule(tmp_path, monkey
     assert loaded.checkpoint_every_steps == 9_600_000
 
 
-def test_source_transition_zero_curriculum_does_not_serialize_unused_policy(tmp_path, monkeypatch) -> None:
-    """Source should run its initial curriculum without creating an out-of-contract checkpoint."""
+@pytest.mark.parametrize("save_initial", (False, True))
+def test_source_transition_zero_curriculum_and_policy_follow_schedule(tmp_path, monkeypatch, save_initial) -> None:
+    """Source should always run its initial curriculum and publish only when requested."""
     events = []
+    checkpoints = []
     monkeypatch.setattr(source, "load_expert_trajectories_from_motion_lib", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(source, "_source_curriculum_event", lambda *_args, transition, **_kwargs: events.append(transition))
+    monkeypatch.setattr(source, "_save_evaluation_checkpoint", lambda *_args, **_kwargs: checkpoints.append(_args[-1]))
     monkeypatch.setattr(
         source,
         "BFMZeroVecEnv",
@@ -122,10 +128,18 @@ def test_source_transition_zero_curriculum_does_not_serialize_unused_policy(tmp_
         action_dim=29,
     )
 
-    source._train(workspace)
+    source._train(
+        workspace,
+        resolve_training_schedule(
+            transitions=1,
+            num_envs=1,
+            evaluation_checkpoint_every_transitions=1,
+            save_initial_evaluation_checkpoint=save_initial,
+        ),
+    )
 
     assert events == [0]
-    assert not (tmp_path / "evaluation_checkpoints").exists()
+    assert checkpoints == ([0] if save_initial else [])
 
 
 def test_source_checkpoint_publication_is_atomic_and_rejects_stale_targets(tmp_path) -> None:
@@ -168,3 +182,40 @@ def test_source_checkpoint_failure_never_publishes_partial_directory(tmp_path) -
     checkpoints = tmp_path / "evaluation_checkpoints"
     assert not (checkpoints / "9600000").exists()
     assert not (checkpoints / ".9600000.staging").exists()
+
+
+def test_training_schedule_rejects_nonboolean_initial_checkpoint_flag() -> None:
+    """The shared transition-zero choice must be an explicit boolean."""
+    with pytest.raises(ValueError, match="must be boolean"):
+        resolve_training_schedule(
+            transitions=1,
+            num_envs=1,
+            evaluation_checkpoint_every_transitions=1,
+            save_initial_evaluation_checkpoint=0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("save_initial", "expected"),
+    (
+        (False, ("curriculum",)),
+        (True, ("checkpoint", "curriculum")),
+    ),
+)
+def test_candidate_transition_zero_curriculum_and_policy_follow_schedule(tmp_path, save_initial, expected) -> None:
+    """Candidate should implement the same transition-zero policy as source."""
+    events = []
+    runner = SimpleNamespace(
+        publish_evaluation_checkpoint=lambda _destination: events.append("checkpoint"),
+        curriculum_event=lambda: events.append("curriculum"),
+    )
+    schedule = resolve_training_schedule(
+        transitions=1,
+        num_envs=1,
+        evaluation_checkpoint_every_transitions=1,
+        save_initial_evaluation_checkpoint=save_initial,
+    )
+
+    _initialize_evaluation_schedule(runner, tmp_path, schedule)
+
+    assert tuple(events) == expected

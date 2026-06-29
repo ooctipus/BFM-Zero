@@ -15,6 +15,7 @@ class BFMTrainingSchedule:
 
     total_iterations: int
     save_interval: int
+    save_initial_evaluation_checkpoint: bool
 
 
 def resolve_training_schedule(
@@ -22,8 +23,11 @@ def resolve_training_schedule(
     transitions: int,
     num_envs: int,
     evaluation_checkpoint_every_transitions: int,
+    save_initial_evaluation_checkpoint: bool,
 ) -> BFMTrainingSchedule:
     """Convert transition counts into one exact source/candidate iteration schedule."""
+    if not isinstance(save_initial_evaluation_checkpoint, bool):
+        raise ValueError("save_initial_evaluation_checkpoint must be boolean.")
     values = (transitions, num_envs, evaluation_checkpoint_every_transitions)
     if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in values):
         raise ValueError("transitions, num_envs, and evaluation checkpoint cadence must be positive integers.")
@@ -36,6 +40,7 @@ def resolve_training_schedule(
     return BFMTrainingSchedule(
         total_iterations=transitions // num_envs,
         save_interval=evaluation_checkpoint_every_transitions // num_envs,
+        save_initial_evaluation_checkpoint=save_initial_evaluation_checkpoint,
     )
 
 

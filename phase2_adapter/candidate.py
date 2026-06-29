@@ -20,6 +20,7 @@ from .expert import BFMZeroExpertProvider
 from .specification import (
     BFM_MODEL_PROFILE_DEFAULT,
     BFM_MODEL_PROFILES,
+    BFMTrainingSchedule,
     observation_routes,
     replay_config,
     resolve_model_profile,
@@ -154,18 +155,18 @@ class _BFMEvaluationCheckpointRunner(OffPolicyRunner):
         if self.logger.log_dir is None:
             raise RuntimeError("BFM milestone checkpoints require a log directory.")
         destination = Path(self.logger.log_dir) / "evaluation_checkpoints"
-        self.save_evaluation_checkpoint(destination)
+        self.publish_evaluation_checkpoint(destination)
+        self.curriculum_event()
         if self.collected_transitions == self._final_transitions:
             super().save(path, infos)
 
-    def save_evaluation_checkpoint(self, destination: Path) -> None:
-        """Write the current policy and apply its declared curriculum event."""
+    def publish_evaluation_checkpoint(self, destination: Path) -> None:
+        """Publish the current compact policy without changing environment state."""
         destination.mkdir(exist_ok=True)
         policy = destination / f"{self.collected_transitions}.pt"
         temporary = policy.with_suffix(".tmp")
         torch.save({"model_state_dict": self.alg.get_policy().state_dict()}, temporary)
         temporary.replace(policy)
-        self.curriculum_event()
 
     def curriculum_event(self) -> None:
         """Apply one bridge-owned tracking curriculum update."""
@@ -194,6 +195,17 @@ class _BFMEvaluationCheckpointRunner(OffPolicyRunner):
             )
 
 
+def _initialize_evaluation_schedule(
+    runner: _BFMEvaluationCheckpointRunner,
+    destination: Path,
+    schedule: BFMTrainingSchedule,
+) -> None:
+    """Run the mandatory transition-zero curriculum and optionally publish its policy."""
+    if schedule.save_initial_evaluation_checkpoint:
+        runner.publish_evaluation_checkpoint(destination)
+    runner.curriculum_event()
+
+
 def _configure_training_runtime() -> None:
     """Match the released BFM float32 matrix-multiplication policy."""
     torch.set_float32_matmul_precision("high")
@@ -209,6 +221,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=4728)
     parser.add_argument("--num_envs", type=int, default=1024)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--save_initial_evaluation_checkpoint", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--evaluation_checkpoint_every_transitions", type=int, default=9_600_000)
     parser.add_argument(
         "--model_profile",
@@ -220,6 +233,7 @@ def main() -> None:
         transitions=args.transitions,
         num_envs=args.num_envs,
         evaluation_checkpoint_every_transitions=args.evaluation_checkpoint_every_transitions,
+        save_initial_evaluation_checkpoint=args.save_initial_evaluation_checkpoint,
     )
     if args.output_dir.exists():
         raise FileExistsError(f"Output directory already exists: {args.output_dir}")
@@ -246,7 +260,7 @@ def main() -> None:
         device=args.device,
         final_transitions=args.transitions,
     )
-    runner.save_evaluation_checkpoint(args.output_dir / "evaluation_checkpoints")
+    _initialize_evaluation_schedule(runner, args.output_dir / "evaluation_checkpoints", schedule)
     runner.learn(schedule.total_iterations)
     torch.save({"model_state_dict": runner.alg.get_policy().state_dict()}, args.output_dir / "policy.pt")
     env.close()
