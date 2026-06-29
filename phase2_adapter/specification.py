@@ -2,9 +2,43 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .environment import BFM_AUXILIARY_EVIDENCE_NAMES
 
 BFM_MODEL_PROFILE_DEFAULT = "residual_6x2048"
+
+
+@dataclass(frozen=True, slots=True)
+class BFMTrainingSchedule:
+    """Exact vector-step schedule shared by source and candidate learners."""
+
+    total_iterations: int
+    save_interval: int
+
+
+def resolve_training_schedule(
+    *,
+    transitions: int,
+    num_envs: int,
+    evaluation_checkpoint_every_transitions: int,
+) -> BFMTrainingSchedule:
+    """Convert transition counts into one exact source/candidate iteration schedule."""
+    values = (transitions, num_envs, evaluation_checkpoint_every_transitions)
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in values):
+        raise ValueError("transitions, num_envs, and evaluation checkpoint cadence must be positive integers.")
+    if transitions % num_envs:
+        raise ValueError("transitions must be divisible by num_envs.")
+    if evaluation_checkpoint_every_transitions % num_envs:
+        raise ValueError("evaluation checkpoint cadence must be divisible by num_envs.")
+    if transitions % evaluation_checkpoint_every_transitions:
+        raise ValueError("final transition must align with evaluation checkpoint cadence.")
+    return BFMTrainingSchedule(
+        total_iterations=transitions // num_envs,
+        save_interval=evaluation_checkpoint_every_transitions // num_envs,
+    )
+
+
 BFM_MODEL_PROFILES = {
     "residual_6x2048": (2048, 6),
     "residual_6x1024": (1024, 6),

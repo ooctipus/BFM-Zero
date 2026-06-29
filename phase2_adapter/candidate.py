@@ -23,6 +23,7 @@ from .specification import (
     observation_routes,
     replay_config,
     resolve_model_profile,
+    resolve_training_schedule,
 )
 
 
@@ -47,6 +48,7 @@ def candidate_config(
     expert_provider: BFMZeroExpertProvider,
     *,
     seed: int,
+    save_interval: int,
     model_profile: str = BFM_MODEL_PROFILE_DEFAULT,
 ) -> dict[str, Any]:
     """Return the released-scale BFM configuration with exact-terminal collection."""
@@ -63,7 +65,7 @@ def candidate_config(
         "num_steps_per_env": 1,
         "num_updates_per_iteration": 16,
         "random_action_steps": 10_240,
-        "save_interval": 9_375,
+        "save_interval": save_interval,
         "check_for_nan": True,
         "obs_groups": observation_routes(),
         "model": {
@@ -207,14 +209,18 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=4728)
     parser.add_argument("--num_envs", type=int, default=1024)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--evaluation_checkpoint_every_transitions", type=int, default=9_600_000)
     parser.add_argument(
         "--model_profile",
         choices=tuple(BFM_MODEL_PROFILES),
         default=BFM_MODEL_PROFILE_DEFAULT,
     )
     args = parser.parse_args()
-    if args.transitions % args.num_envs:
-        raise ValueError(f"transitions must be divisible by {args.num_envs}.")
+    schedule = resolve_training_schedule(
+        transitions=args.transitions,
+        num_envs=args.num_envs,
+        evaluation_checkpoint_every_transitions=args.evaluation_checkpoint_every_transitions,
+    )
     if args.output_dir.exists():
         raise FileExistsError(f"Output directory already exists: {args.output_dir}")
     args.output_dir.mkdir(parents=True)
@@ -233,6 +239,7 @@ def main() -> None:
         candidate_config(
             BFMZeroExpertProvider(seed=args.seed),
             seed=args.seed,
+            save_interval=schedule.save_interval,
             model_profile=args.model_profile,
         ),
         log_dir=str(args.output_dir),
@@ -240,7 +247,7 @@ def main() -> None:
         final_transitions=args.transitions,
     )
     runner.save_evaluation_checkpoint(args.output_dir / "evaluation_checkpoints")
-    runner.learn(args.transitions // args.num_envs)
+    runner.learn(schedule.total_iterations)
     torch.save({"model_state_dict": runner.alg.get_policy().state_dict()}, args.output_dir / "policy.pt")
     env.close()
 

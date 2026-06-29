@@ -29,9 +29,11 @@ from .environment import BFM_AUXILIARY_EVIDENCE_NAMES, BFMZeroVecEnv
 from .specification import (
     BFM_MODEL_PROFILE_DEFAULT,
     BFM_MODEL_PROFILES,
+    BFMTrainingSchedule,
     observation_routes,
     replay_config,
     resolve_model_profile,
+    resolve_training_schedule,
 )
 
 
@@ -187,7 +189,6 @@ def _train(workspace: Workspace) -> None:
         cfg.agent,
         device=cfg.buffer_device,
     )
-    _save_evaluation_checkpoint(agent._model, workspace.work_dir, 0)
     _source_curriculum_event(workspace, expert, transition=0)
     env = BFMZeroVecEnv(workspace.train_env, terminal_profile="correct_terminal", device=cfg.env.device)
     observations = env.get_observations()
@@ -281,7 +282,7 @@ def _train(workspace: Workspace) -> None:
         env.close()
 
 
-def _load_config(args: argparse.Namespace) -> TrainConfig:
+def _load_config(args: argparse.Namespace, schedule: BFMTrainingSchedule) -> TrainConfig:
     config = TrainConfig.model_validate_json(args.reference_config.read_text())
     hidden_dim, hidden_layers = resolve_model_profile(args.model_profile)
     env = config.env.model_copy(
@@ -313,7 +314,7 @@ def _load_config(args: argparse.Namespace) -> TrainConfig:
             "num_agent_updates": 16,
             "update_agent_every": args.num_envs,
             "log_every_updates": args.log_every_transitions,
-            "checkpoint_every_steps": args.evaluation_checkpoint_every_transitions,
+            "checkpoint_every_steps": schedule.save_interval * args.num_envs,
             "checkpoint_buffer": False,
             "prioritization": False,
             "use_trajectory_buffer": False,
@@ -344,17 +345,16 @@ def main() -> None:
         default=BFM_MODEL_PROFILE_DEFAULT,
     )
     args = parser.parse_args()
-    if args.transitions % args.num_envs:
-        raise ValueError("transitions must be divisible by num_envs.")
-    if args.evaluation_checkpoint_every_transitions < 1:
-        raise ValueError("evaluation_checkpoint_every_transitions must be positive.")
-    if args.evaluation_checkpoint_every_transitions % args.num_envs:
-        raise ValueError("evaluation checkpoint cadence must be divisible by num_envs.")
+    schedule = resolve_training_schedule(
+        transitions=args.transitions,
+        num_envs=args.num_envs,
+        evaluation_checkpoint_every_transitions=args.evaluation_checkpoint_every_transitions,
+    )
     if args.output_dir.exists():
         raise FileExistsError(f"Output directory already exists: {args.output_dir}")
     torch.cuda.set_device(torch.device(args.device))
     set_seed_everywhere(args.seed)
-    workspace = Workspace(_load_config(args))
+    workspace = Workspace(_load_config(args, schedule))
     _train(workspace)
 
 

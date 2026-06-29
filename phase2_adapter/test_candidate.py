@@ -31,11 +31,12 @@ def test_candidate_matches_released_matmul_precision() -> None:
 
 def test_candidate_uses_released_cadence_routes_and_compact_history() -> None:
     """The candidate should differ from source at learner ownership and exact finals only."""
-    config = candidate_config(lambda *_args, **_kwargs: None, seed=4728)
+    config = candidate_config(lambda *_args, **_kwargs: None, seed=4728, save_interval=9_375)
 
     assert config["num_steps_per_env"] == 1
     assert config["num_updates_per_iteration"] == 16
     assert config["random_action_steps"] == 10_240
+    assert config["save_interval"] == 9_375
     assert config["model"]["normalization_type"] == "exponential"
     assert config["model"]["normalization_eps"] == 1e-5
     assert config["model"]["normalization_momentum"] == 0.01
@@ -61,7 +62,7 @@ def test_candidate_uses_released_cadence_routes_and_compact_history() -> None:
 def test_candidate_resolves_semantic_capacity_profiles() -> None:
     """Each Pareto profile should change network capacity without changing topology semantics."""
     for name, (hidden_dim, hidden_layers) in BFM_MODEL_PROFILES.items():
-        config = candidate_config(lambda *_args, **_kwargs: None, seed=4728, model_profile=name)
+        config = candidate_config(lambda *_args, **_kwargs: None, seed=4728, save_interval=9_375, model_profile=name)
         actor = config["model"]["actor_cfg"]
         forward = config["model"]["forward_cfg"]
 
@@ -77,7 +78,7 @@ def test_candidate_resolves_semantic_capacity_profiles() -> None:
         assert all(head["network"] == forward for head in config["model"]["value_heads"])
 
     with pytest.raises(ValueError, match="Unknown BFM model profile"):
-        candidate_config(lambda *_args, **_kwargs: None, seed=4728, model_profile="residual_unknown")
+        candidate_config(lambda *_args, **_kwargs: None, seed=4728, save_interval=9_375, model_profile="residual_unknown")
 
 
 def test_candidate_policy_reuses_named_model_routes() -> None:
