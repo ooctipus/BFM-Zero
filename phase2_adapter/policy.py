@@ -12,6 +12,7 @@ from tensordict import TensorDict
 
 from .candidate import candidate_config
 from .environment import BFM_ACTION_DIM, BFM_FIELD_WIDTHS
+from .specification import BFM_MODEL_PROFILE_DEFAULT
 
 
 @dataclass
@@ -56,7 +57,11 @@ class BFMCandidatePolicy:
         return TensorDict(fields, batch_size=[batch_size], device=self.device)
 
 
-def load_candidate_policy(checkpoint: str | Path, device: str | torch.device) -> BFMCandidatePolicy:
+def load_candidate_policy(
+    checkpoint: str | Path,
+    device: str | torch.device,
+    model_profile: str = BFM_MODEL_PROFILE_DEFAULT,
+) -> BFMCandidatePolicy:
     """Construct the released-scale inference topology and load candidate state."""
     device = torch.device(device)
     observations = TensorDict(
@@ -64,7 +69,7 @@ def load_candidate_policy(checkpoint: str | Path, device: str | torch.device) ->
         batch_size=[1],
         device=device,
     )
-    config = candidate_config(lambda *_args, **_kwargs: None, seed=4728)
+    config = candidate_config(lambda *_args, **_kwargs: None, seed=4728, model_profile=model_profile)
     model = ForwardBackwardModel.from_config(
         observations,
         config["obs_groups"],

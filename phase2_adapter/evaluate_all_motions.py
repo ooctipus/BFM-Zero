@@ -15,6 +15,7 @@ from humanoidverse.agents.load_utils import load_model_from_checkpoint_dir
 from humanoidverse.agents.utils import set_seed_everywhere
 
 from .evaluation import EXPECTED_BFM_MOTIONS, normalize_tracking_metrics, run_native_tracking
+from .specification import BFM_MODEL_PROFILE_DEFAULT, BFM_MODEL_PROFILES
 
 
 def main() -> None:
@@ -37,6 +38,11 @@ def main() -> None:
     parser.add_argument("--num_envs", type=int, default=1024)
     parser.add_argument("--disable_domain_randomization", action="store_true")
     parser.add_argument("--disable_obs_noise", action="store_true")
+    parser.add_argument(
+        "--model_profile",
+        choices=tuple(BFM_MODEL_PROFILES),
+        default=BFM_MODEL_PROFILE_DEFAULT,
+    )
     args = parser.parse_args()
 
     if args.output_dir.exists():
@@ -54,7 +60,7 @@ def main() -> None:
             raise ValueError("Candidate evaluation requires --checkpoint.")
         from .policy import load_candidate_policy
 
-        model = load_candidate_policy(args.checkpoint, args.device)
+        model = load_candidate_policy(args.checkpoint, args.device, args.model_profile)
     with (args.model_folder / "config.json").open() as stream:
         config = json.load(stream)
     env_options = config["env"]
@@ -95,6 +101,7 @@ def main() -> None:
         "expected_motion_count": EXPECTED_BFM_MOTIONS,
         "record_count": len(rows),
         "duration_seconds": duration,
+        "model_profile": args.model_profile,
     }
     with (args.output_dir / "manifest.json").open("x") as stream:
         json.dump(manifest, stream, indent=2, sort_keys=True)

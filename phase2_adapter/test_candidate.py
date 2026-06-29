@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 from rsl_rl.models.forward_backward_model import ForwardBackwardModel
 from rsl_rl.runners.off_policy_runner import OffPolicyRunner
@@ -14,6 +15,7 @@ from phase2_adapter.candidate import (
 )
 from phase2_adapter.environment import BFM_AUXILIARY_EVIDENCE_NAMES, BFM_FIELD_WIDTHS
 from phase2_adapter.policy import BFMCandidatePolicy
+from phase2_adapter.specification import BFM_MODEL_PROFILES
 
 
 def test_candidate_matches_released_matmul_precision() -> None:
@@ -52,6 +54,28 @@ def test_candidate_uses_released_cadence_routes_and_compact_history() -> None:
     assert config["algorithm"]["random_action_range"] == (-5.0, 5.0)
     assert config["model"]["value_heads"][1]["spec"]["reward_composition"] == "scalar"
     assert config["torch_compile_mode"] is None
+
+
+def test_candidate_resolves_semantic_capacity_profiles() -> None:
+    """Each Pareto profile should change network capacity without changing topology semantics."""
+    for name, (hidden_dim, hidden_layers) in BFM_MODEL_PROFILES.items():
+        config = candidate_config(lambda *_args, **_kwargs: None, seed=4728, model_profile=name)
+        actor = config["model"]["actor_cfg"]
+        forward = config["model"]["forward_cfg"]
+
+        assert actor == {
+            "hidden_dim": hidden_dim,
+            "hidden_layers": hidden_layers,
+            "embedding_layers": 2,
+            "residual": True,
+        }
+        assert forward["hidden_dim"] == hidden_dim
+        assert forward["hidden_layers"] == hidden_layers
+        assert forward["embedding_layers"] == hidden_layers
+        assert all(head["network"] == forward for head in config["model"]["value_heads"])
+
+    with pytest.raises(ValueError, match="Unknown BFM model profile"):
+        candidate_config(lambda *_args, **_kwargs: None, seed=4728, model_profile="residual_unknown")
 
 
 def test_candidate_policy_reuses_named_model_routes() -> None:

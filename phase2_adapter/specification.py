@@ -4,6 +4,22 @@ from __future__ import annotations
 
 from .environment import BFM_AUXILIARY_EVIDENCE_NAMES
 
+BFM_MODEL_PROFILE_DEFAULT = "residual_6x2048"
+BFM_MODEL_PROFILES = {
+    "residual_6x2048": (2048, 6),
+    "residual_6x1024": (1024, 6),
+    "residual_3x1024": (1024, 3),
+}
+
+
+def resolve_model_profile(name: str) -> tuple[int, int]:
+    """Return hidden width and residual-block count for one BFM profile."""
+    try:
+        return BFM_MODEL_PROFILES[name]
+    except KeyError as error:
+        choices = ", ".join(BFM_MODEL_PROFILES)
+        raise ValueError(f"Unknown BFM model profile {name!r}; expected one of: {choices}.") from error
+
 
 def observation_routes() -> dict[str, list[str]]:
     """Return the released asymmetric observation routes."""

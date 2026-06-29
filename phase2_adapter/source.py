@@ -26,7 +26,13 @@ from humanoidverse.train import TrainConfig, Workspace
 
 from .curriculum import run_curriculum_event
 from .environment import BFM_AUXILIARY_EVIDENCE_NAMES, BFMZeroVecEnv
-from .specification import observation_routes, replay_config
+from .specification import (
+    BFM_MODEL_PROFILE_DEFAULT,
+    BFM_MODEL_PROFILES,
+    observation_routes,
+    replay_config,
+    resolve_model_profile,
+)
 
 
 class _SourceReplay:
@@ -276,13 +282,23 @@ def _train(workspace: Workspace) -> None:
 
 def _load_config(args: argparse.Namespace) -> TrainConfig:
     config = TrainConfig.model_validate_json(args.reference_config.read_text())
+    hidden_dim, hidden_layers = resolve_model_profile(args.model_profile)
     env = config.env.model_copy(
         update={
             "device": args.device,
             "lafan_tail_path": str(args.data_path.resolve()),
         }
     )
-    model = config.agent.model.model_copy(update={"device": args.device})
+    architecture = config.agent.model.archi
+    architecture = architecture.model_copy(
+        update={
+            "f": architecture.f.model_copy(update={"hidden_dim": hidden_dim, "hidden_layers": hidden_layers}),
+            "actor": architecture.actor.model_copy(update={"hidden_dim": hidden_dim, "hidden_layers": hidden_layers}),
+            "critic": architecture.critic.model_copy(update={"hidden_dim": hidden_dim, "hidden_layers": hidden_layers}),
+            "aux_critic": architecture.aux_critic.model_copy(update={"hidden_dim": hidden_dim, "hidden_layers": hidden_layers}),
+        }
+    )
+    model = config.agent.model.model_copy(update={"device": args.device, "archi": architecture})
     agent = config.agent.model_copy(update={"model": model, "compile": args.compile})
     return config.model_copy(
         update={
@@ -321,6 +337,11 @@ def main() -> None:
     parser.add_argument("--log_every_transitions", type=int, default=384_000)
     parser.add_argument("--evaluation_checkpoint_every_transitions", type=int, default=9_600_000)
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--model_profile",
+        choices=tuple(BFM_MODEL_PROFILES),
+        default=BFM_MODEL_PROFILE_DEFAULT,
+    )
     args = parser.parse_args()
     if args.transitions % args.num_envs:
         raise ValueError("transitions must be divisible by num_envs.")

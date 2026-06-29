@@ -17,7 +17,13 @@ from humanoidverse.agents.utils import set_seed_everywhere
 from .curriculum import run_curriculum_event
 from .environment import BFM_AUXILIARY_EVIDENCE_NAMES, BFMZeroVecEnv
 from .expert import BFMZeroExpertProvider
-from .specification import observation_routes, replay_config
+from .specification import (
+    BFM_MODEL_PROFILE_DEFAULT,
+    BFM_MODEL_PROFILES,
+    observation_routes,
+    replay_config,
+    resolve_model_profile,
+)
 
 
 def make_native_environment(
@@ -37,10 +43,21 @@ def make_native_environment(
     return BFMZeroVecEnv(native, terminal_profile="correct_terminal", device=device)
 
 
-def candidate_config(expert_provider: BFMZeroExpertProvider, *, seed: int) -> dict[str, Any]:
+def candidate_config(
+    expert_provider: BFMZeroExpertProvider,
+    *,
+    seed: int,
+    model_profile: str = BFM_MODEL_PROFILE_DEFAULT,
+) -> dict[str, Any]:
     """Return the released-scale BFM configuration with exact-terminal collection."""
-    actor = {"hidden_dim": 2048, "hidden_layers": 6, "embedding_layers": 2, "residual": True}
-    value = {"hidden_dim": 2048, "hidden_layers": 6, "embedding_layers": 6, "residual": True}
+    hidden_dim, hidden_layers = resolve_model_profile(model_profile)
+    actor = {"hidden_dim": hidden_dim, "hidden_layers": hidden_layers, "embedding_layers": 2, "residual": True}
+    value = {
+        "hidden_dim": hidden_dim,
+        "hidden_layers": hidden_layers,
+        "embedding_layers": hidden_layers,
+        "residual": True,
+    }
     magnitudes = (0.0, 0.1, 10.0, 0.0, 1.0, 0.4, 4.0, 2.0)
     return {
         "num_steps_per_env": 1,
@@ -186,6 +203,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=4728)
     parser.add_argument("--num_envs", type=int, default=1024)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument(
+        "--model_profile",
+        choices=tuple(BFM_MODEL_PROFILES),
+        default=BFM_MODEL_PROFILE_DEFAULT,
+    )
     args = parser.parse_args()
     if args.transitions % args.num_envs:
         raise ValueError(f"transitions must be divisible by {args.num_envs}.")
@@ -204,7 +226,11 @@ def main() -> None:
     set_seed_everywhere(args.seed)
     runner = _BFMEvaluationCheckpointRunner(
         env,
-        candidate_config(BFMZeroExpertProvider(seed=args.seed), seed=args.seed),
+        candidate_config(
+            BFMZeroExpertProvider(seed=args.seed),
+            seed=args.seed,
+            model_profile=args.model_profile,
+        ),
         log_dir=str(args.output_dir),
         device=args.device,
         final_transitions=args.transitions,
