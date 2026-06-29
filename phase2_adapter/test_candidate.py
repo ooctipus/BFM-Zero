@@ -37,6 +37,8 @@ def test_candidate_uses_released_cadence_routes_and_compact_history() -> None:
     assert config["model"]["normalization_type"] == "exponential"
     assert config["model"]["normalization_eps"] == 1e-5
     assert config["model"]["normalization_momentum"] == 0.01
+    assert config["model"]["distribution_cfg"]["noise_clip"] == 0.3
+    assert config["algorithm"]["fb_pessimism"] == 0.0
     assert config["replay"]["capacity_steps"] == 5_000
     assert config["replay"]["terminal_capacity_per_env"] == 17
     assert config["replay"]["sampling"] == "episode_uniform"
