@@ -11,10 +11,10 @@ from typing import Any
 import torch
 
 from humanoidverse.agents.envs.humanoidverse_isaac import HumanoidVerseIsaacConfig
-from humanoidverse.agents.load_utils import load_model_from_checkpoint_dir
 from humanoidverse.agents.utils import set_seed_everywhere
 
 from .evaluation import EXPECTED_BFM_MOTIONS, normalize_tracking_metrics, run_native_tracking
+from .policy import load_evaluation_policy
 from .specification import BFM_MODEL_PROFILE_DEFAULT, BFM_MODEL_PROFILES
 
 
@@ -50,17 +50,13 @@ def main() -> None:
     args.output_dir.mkdir(parents=True)
     torch.cuda.set_device(torch.device(args.device))
     set_seed_everywhere(args.evaluation_seed)
-    if args.checkpoint_type == "source":
-        checkpoint = args.checkpoint if args.checkpoint is not None else args.model_folder / "checkpoint"
-        model = load_model_from_checkpoint_dir(checkpoint, device="cuda")
-        model.to(args.device)
-        model.eval()
-    else:
-        if args.checkpoint is None:
-            raise ValueError("Candidate evaluation requires --checkpoint.")
-        from .policy import load_candidate_policy
-
-        model = load_candidate_policy(args.checkpoint, args.device, args.model_profile)
+    model = load_evaluation_policy(
+        args.model_folder,
+        args.checkpoint,
+        args.checkpoint_type,
+        args.device,
+        args.model_profile,
+    )
     with (args.model_folder / "config.json").open() as stream:
         config = json.load(stream)
     env_options = config["env"]

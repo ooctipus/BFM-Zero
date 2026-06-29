@@ -35,6 +35,15 @@ class BFMCandidatePolicy:
         """Project contexts with the candidate model's configured geometry."""
         return self.model.context_project(context)
 
+    def context_infer_reward(
+        self,
+        backward_features: torch.Tensor,
+        rewards: torch.Tensor,
+        weights: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Infer reward contexts through the shared FB integration operator."""
+        return self.model.context_infer_reward(backward_features, rewards, weights)
+
     @torch.no_grad()
     def act(
         self,
@@ -55,6 +64,29 @@ class BFMCandidatePolicy:
         fields = {name: torch.as_tensor(values[name], dtype=torch.float32, device=self.device) for name in names}
         batch_size = next(iter(fields.values())).shape[0]
         return TensorDict(fields, batch_size=[batch_size], device=self.device)
+
+
+def load_evaluation_policy(
+    model_folder: str | Path,
+    checkpoint: str | Path | None,
+    checkpoint_type: str,
+    device: str | torch.device,
+    model_profile: str = BFM_MODEL_PROFILE_DEFAULT,
+) -> Any:
+    """Load a source or unified policy behind one native evaluation contract."""
+    if checkpoint_type == "source":
+        from humanoidverse.agents.load_utils import load_model_from_checkpoint_dir
+
+        checkpoint = Path(checkpoint) if checkpoint is not None else Path(model_folder) / "checkpoint"
+        model = load_model_from_checkpoint_dir(checkpoint, device="cuda")
+        model.to(device)
+        model.eval()
+        return model
+    if checkpoint_type != "candidate":
+        raise ValueError(f"Unknown checkpoint type: {checkpoint_type!r}.")
+    if checkpoint is None:
+        raise ValueError("Candidate evaluation requires a checkpoint.")
+    return load_candidate_policy(checkpoint, device, model_profile)
 
 
 def load_candidate_policy(
