@@ -11,10 +11,16 @@ from typing import Any
 import torch
 
 from humanoidverse.agents.envs.humanoidverse_isaac import HumanoidVerseIsaacConfig
-from humanoidverse.agents.utils import set_seed_everywhere
 
-from .evaluation import EXPECTED_BFM_MOTIONS, normalize_tracking_metrics, run_native_tracking
-from .policy import load_evaluation_policy
+from .evaluation import (
+    EVALUATION_RNG_PROTOCOL,
+    EXPECTED_BFM_MOTIONS,
+    artifact_sha256,
+    build_evaluation_environment,
+    normalize_tracking_metrics,
+    run_native_tracking,
+)
+from .policy import load_evaluation_policy, resolve_evaluation_checkpoint
 from .specification import BFM_MODEL_PROFILE_DEFAULT, BFM_MODEL_PROFILES
 
 
@@ -31,6 +37,7 @@ def main() -> None:
     parser.add_argument("--model_folder", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--checkpoint_type", choices=("source", "candidate"), default="source")
+    parser.add_argument("--reference_config", type=Path, required=True)
     parser.add_argument("--data_path", type=Path, required=True)
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--implementation", required=True)
@@ -40,7 +47,6 @@ def main() -> None:
     parser.add_argument("--terminal_profile", choices=("native_reference", "correct_terminal"), required=True)
     parser.add_argument("--run_id", required=True)
     parser.add_argument("--evaluator_hash", required=True)
-    parser.add_argument("--dataset_hash", required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--num_envs", type=int, default=1024)
     parser.add_argument("--disable_domain_randomization", action="store_true")
@@ -57,15 +63,18 @@ def main() -> None:
         raise FileExistsError(f"Output directory already exists: {args.output_dir}")
     args.output_dir.mkdir(parents=True)
     torch.cuda.set_device(torch.device(args.device))
-    set_seed_everywhere(args.evaluation_seed)
+    checkpoint_path = resolve_evaluation_checkpoint(args.model_folder, args.checkpoint, args.checkpoint_type)
+    checkpoint_sha256 = artifact_sha256(checkpoint_path)
+    reference_config_sha256 = artifact_sha256(args.reference_config)
+    data_sha256 = artifact_sha256(args.data_path)
     model = load_evaluation_policy(
         args.model_folder,
-        args.checkpoint,
+        checkpoint_path,
         args.checkpoint_type,
         args.device,
         args.model_profile,
     )
-    with (args.model_folder / "config.json").open() as stream:
+    with args.reference_config.open() as stream:
         config = json.load(stream)
     env_options = config["env"]
     env_options["device"] = args.device
@@ -73,7 +82,11 @@ def main() -> None:
     env_options["disable_domain_randomization"] = args.disable_domain_randomization
     env_options["disable_obs_noise"] = args.disable_obs_noise
     env_options["hydra_overrides"].append("env.config.headless=True")
-    env = HumanoidVerseIsaacConfig(**env_options).build(args.num_envs)[0]
+
+    def make_environment():
+        return HumanoidVerseIsaacConfig(**env_options).build(args.num_envs)[0]
+
+    env = build_evaluation_environment(make_environment, seed=args.evaluation_seed)
     metrics, duration = run_native_tracking(model, env=env, num_envs=args.num_envs)
     rows = normalize_tracking_metrics(
         metrics,
@@ -84,7 +97,7 @@ def main() -> None:
         terminal_profile=args.terminal_profile,
         run_id=args.run_id,
         evaluator_hash=args.evaluator_hash,
-        dataset_hash=args.dataset_hash,
+        dataset_hash=data_sha256,
     )
     with (args.output_dir / "native_metrics.json").open("x") as stream:
         json.dump({"duration_seconds": duration, "metrics": metrics}, stream, indent=2, default=_json_default)
@@ -93,7 +106,7 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(rows)
     manifest = {
-        "schema": "forward_backward_phase2_manifest_v1",
+        "schema": "forward_backward_phase2_tracking_evaluation_v2",
         "run_id": args.run_id,
         "implementation": args.implementation,
         "training_seed": args.training_seed,
@@ -101,7 +114,15 @@ def main() -> None:
         "checkpoint_transition": args.checkpoint_transition,
         "terminal_profile": args.terminal_profile,
         "evaluator_hash": args.evaluator_hash,
-        "dataset_hash": args.dataset_hash,
+        "rng_protocol": EVALUATION_RNG_PROTOCOL,
+        "checkpoint_type": args.checkpoint_type,
+        "checkpoint_path": str(checkpoint_path.resolve()),
+        "checkpoint_sha256": checkpoint_sha256,
+        "reference_config_path": str(args.reference_config.resolve()),
+        "reference_config_sha256": reference_config_sha256,
+        "data_path": str(args.data_path.resolve()),
+        "data_sha256": data_sha256,
+        "dataset_hash": data_sha256,
         "expected_motion_count": EXPECTED_BFM_MOTIONS,
         "record_count": len(rows),
         "duration_seconds": duration,

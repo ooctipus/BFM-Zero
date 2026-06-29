@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import time
 from pathlib import Path
@@ -12,43 +11,19 @@ from pathlib import Path
 import mujoco
 import torch
 
-from humanoidverse.agents.utils import set_seed_everywhere
-from humanoidverse.envs.g1_env_helper.bench.reward_eval_hv import relabel
-from humanoidverse.envs.g1_env_helper.robot import make_from_name
 from humanoidverse.utils.g1_env_config import get_g1_robot_xml_root
 
 from .candidate import make_native_environment
-from .policy import load_evaluation_policy
-from .reward_evaluation import BFM_REWARD_TASKS, infer_reward_contexts, normalize_reward_rollouts
+from .evaluation import EVALUATION_RNG_PROTOCOL, artifact_sha256, build_evaluation_environment
+from .policy import load_evaluation_policy, resolve_evaluation_checkpoint
+from .reward_evaluation import (
+    BFM_REWARD_TASKS,
+    BFM_REWARD_TASKS_SHA256,
+    infer_reward_contexts_from_dataset,
+    normalize_reward_rollouts,
+    relabel_reward_tasks,
+)
 from .specification import BFM_MODEL_PROFILE_DEFAULT, BFM_MODEL_PROFILES
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _relabel(
-    model: mujoco.MjModel,
-    task: str,
-    qpos: torch.Tensor,
-    qvel: torch.Tensor,
-    action: torch.Tensor,
-    workers: int,
-) -> torch.Tensor:
-    values = relabel(
-        model,
-        qpos.numpy(),
-        qvel.numpy(),
-        action.numpy(),
-        make_from_name(task),
-        max_workers=workers,
-        process_executor=False,
-    )
-    return torch.as_tensor(values, dtype=torch.float32).reshape(-1)
 
 
 def main() -> None:
@@ -85,45 +60,41 @@ def main() -> None:
     args.output_dir.mkdir(parents=True)
 
     torch.cuda.set_device(torch.device(args.device))
-    set_seed_everywhere(args.evaluation_seed)
+    checkpoint_path = resolve_evaluation_checkpoint(args.model_folder, args.checkpoint, args.checkpoint_type)
+    checkpoint_sha256 = artifact_sha256(checkpoint_path)
+    reference_config_sha256 = artifact_sha256(args.reference_config)
+    data_sha256 = artifact_sha256(args.data_path)
+    inference_dataset_sha256 = artifact_sha256(args.inference_dataset)
     policy = load_evaluation_policy(
         args.model_folder,
-        args.checkpoint,
+        checkpoint_path,
         args.checkpoint_type,
         args.device,
         args.model_profile,
     )
     dataset = torch.load(args.inference_dataset, map_location="cpu", weights_only=True)
     reward_model_path = get_g1_robot_xml_root() / "scene_29dof_freebase_noadditional_actuators.xml"
-    reward_model = mujoco.MjModel.from_xml_path(str(reward_model_path))
-    inference_rewards = torch.stack(
-        [
-            _relabel(
-                reward_model,
-                task,
-                dataset["qpos"],
-                dataset["qvel"],
-                dataset["action"],
-                args.reward_workers,
-            )
-            for task in BFM_REWARD_TASKS
-        ],
-        dim=-1,
-    )
-    contexts = infer_reward_contexts(
+    reward_model_sha256 = artifact_sha256(reward_model_path)
+    contexts = infer_reward_contexts_from_dataset(
         policy,
-        dataset["observation"],
-        inference_rewards,
+        dataset,
         batch_size=args.inference_batch_size,
+        reference_config_sha256=reference_config_sha256,
+        data_sha256=data_sha256,
+        reward_model_sha256=reward_model_sha256,
     )
+    reward_model = mujoco.MjModel.from_xml_path(str(reward_model_path))
 
     task_count = len(BFM_REWARD_TASKS)
     num_envs = task_count * args.episodes_per_task
-    env = make_native_environment(
-        reference_config=args.reference_config,
-        data_path=args.data_path,
-        num_envs=num_envs,
-        device=args.device,
+    env = build_evaluation_environment(
+        lambda: make_native_environment(
+            reference_config=args.reference_config,
+            data_path=args.data_path,
+            num_envs=num_envs,
+            device=args.device,
+        ),
+        seed=args.evaluation_seed,
     )
     rollout_contexts = contexts.repeat_interleave(args.episodes_per_task, dim=0)
     observations = env.get_observations()
@@ -161,14 +132,14 @@ def main() -> None:
     timeouts = torch.stack(timeout_steps).reshape(args.horizon, task_count, args.episodes_per_task)
     task_returns = []
     for task_index, task in enumerate(BFM_REWARD_TASKS):
-        rewards = _relabel(
+        rewards = relabel_reward_tasks(
             reward_model,
-            task,
+            (task,),
             qpos[:, task_index].reshape(-1, qpos.shape[-1]),
             qvel[:, task_index].reshape(-1, qvel.shape[-1]),
             actions[:, task_index].reshape(-1, actions.shape[-1]),
-            args.reward_workers,
-        )
+            workers=args.reward_workers,
+        )[:, 0]
         task_returns.append(rewards.reshape(args.horizon, args.episodes_per_task).sum(dim=0))
     task_returns = torch.stack(task_returns)
 
@@ -199,21 +170,37 @@ def main() -> None:
         {
             "tasks": BFM_REWARD_TASKS,
             "contexts": contexts.cpu(),
-            "inference_reward_mean": inference_rewards.mean(dim=0),
+            "inference_reward_mean": dataset["reward_labels"].mean(dim=0),
             "returns": task_returns,
         },
         args.output_dir / "contexts_and_returns.pt",
     )
     manifest = {
-        "schema": "forward_backward_phase2_reward_evaluation_v1",
+        "schema": "forward_backward_phase2_reward_evaluation_v2",
         "implementation": args.implementation,
         "training_seed": args.training_seed,
         "evaluation_seed": args.evaluation_seed,
         "checkpoint_transition": args.checkpoint_transition,
         "run_id": args.run_id,
         "evaluator_hash": args.evaluator_hash,
-        "inference_dataset_sha256": _sha256(args.inference_dataset),
-        "reward_model_sha256": _sha256(reward_model_path),
+        "rng_protocol": EVALUATION_RNG_PROTOCOL,
+        "evaluation_protocol": "native_stochastic",
+        "terminal_profile": "correct_terminal",
+        "checkpoint_type": args.checkpoint_type,
+        "checkpoint_path": str(checkpoint_path.resolve()),
+        "checkpoint_sha256": checkpoint_sha256,
+        "reference_config_path": str(args.reference_config.resolve()),
+        "reference_config_sha256": reference_config_sha256,
+        "data_path": str(args.data_path.resolve()),
+        "data_sha256": data_sha256,
+        "inference_dataset_path": str(args.inference_dataset.resolve()),
+        "inference_dataset_sha256": inference_dataset_sha256,
+        "inference_dataset_schema": dataset["schema"],
+        "inference_sample_count": int(dataset["reward_labels"].shape[0]),
+        "reward_model_path": str(reward_model_path.resolve()),
+        "reward_model_sha256": reward_model_sha256,
+        "reward_tasks": BFM_REWARD_TASKS,
+        "reward_tasks_sha256": BFM_REWARD_TASKS_SHA256,
         "model_profile": args.model_profile,
         "task_count": task_count,
         "episodes_per_task": args.episodes_per_task,

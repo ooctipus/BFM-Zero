@@ -10,6 +10,8 @@ from rsl_rl.env import VecEnv
 from tensordict import TensorDict
 
 BFM_ACTION_DIM = 29
+BFM_QPOS_DIM = 36
+BFM_QVEL_DIM = 35
 BFM_CONTROL_HZ = 50
 BFM_FIELD_WIDTHS = {
     "state": 64,
@@ -39,8 +41,8 @@ class ExactFinalObservationCapture:
         self.device = torch.device(env.device)
         self.valid = torch.zeros(env.num_envs, dtype=torch.bool, device=self.device)
         self.observations = {name: torch.empty_like(example_observation[name]) for name in BFM_FIELD_WIDTHS}
-        self.qpos = torch.empty(env.num_envs, 36, dtype=torch.float32, device=self.device)
-        self.qvel = torch.empty(env.num_envs, 35, dtype=torch.float32, device=self.device)
+        self.qpos = torch.empty(env.num_envs, BFM_QPOS_DIM, dtype=torch.float32, device=self.device)
+        self.qvel = torch.empty(env.num_envs, BFM_QVEL_DIM, dtype=torch.float32, device=self.device)
         self._original_reset = self.base_env.reset_envs_idx
 
         def reset_with_capture(_instance: Any, env_ids: torch.Tensor, *args: Any, **kwargs: Any) -> Any:

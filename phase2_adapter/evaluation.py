@@ -2,12 +2,48 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import numbers
 import time
-from typing import Any, Mapping
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, Mapping, TypeVar
+
+from humanoidverse.agents.utils import set_seed_everywhere
 
 EXPECTED_BFM_MOTIONS = 862
+EVALUATION_RNG_PROTOCOL = "seed_immediately_before_environment_construction_v1"
+_EnvironmentT = TypeVar("_EnvironmentT")
+
+
+def artifact_sha256(path: str | Path) -> str:
+    """Hash one evaluation file or directory tree with stable relative paths."""
+    path = Path(path)
+    if path.is_file():
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    if not path.is_dir():
+        raise FileNotFoundError(f"Evaluation artifact does not exist: {path}")
+    digest = hashlib.sha256(b"directory\0")
+    for child in sorted(candidate for candidate in path.rglob("*") if candidate.is_file()):
+        digest.update(child.relative_to(path).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(bytes.fromhex(artifact_sha256(child)))
+    return digest.hexdigest()
+
+
+def build_evaluation_environment(
+    factory: Callable[[], _EnvironmentT],
+    *,
+    seed: int,
+) -> _EnvironmentT:
+    """Give environment construction sole ownership of evaluation RNG state."""
+    set_seed_everywhere(seed)
+    return factory()
 
 
 def run_native_tracking(

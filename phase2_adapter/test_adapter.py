@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import random
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 from rsl_rl.storage.forward_backward_replay import ForwardBackwardTransitionBatch
@@ -15,10 +18,13 @@ from phase2_adapter.environment import (
     BFM_ACTION_DIM,
     BFM_AUXILIARY_EVIDENCE_NAMES,
     BFM_FIELD_WIDTHS,
+    BFM_QPOS_DIM,
+    BFM_QVEL_DIM,
     BFMZeroVecEnv,
 )
 from phase2_adapter.evaluate_all_motions import evaluation_protocol
-from phase2_adapter.evaluation import normalize_tracking_metrics
+from phase2_adapter.evaluation import artifact_sha256, build_evaluation_environment, normalize_tracking_metrics
+from phase2_adapter.policy import resolve_evaluation_checkpoint
 from phase2_adapter.source import _save_evaluation_checkpoint, _SourceReplay
 from phase2_adapter.specification import replay_config
 
@@ -33,6 +39,54 @@ def test_evaluation_protocol_keeps_randomization_and_noise_as_one_contract() -> 
     assert evaluation_protocol(True, True) == "deterministic"
     with pytest.raises(ValueError, match="enable or disable"):
         evaluation_protocol(True, False)
+
+
+def test_evaluation_artifact_hashes_actual_files_and_directory_trees(tmp_path: Path) -> None:
+    """Evaluation identities should hash bytes and stable relative checkpoint paths."""
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    model = checkpoint / "model.safetensors"
+    model.write_bytes(b"model")
+    config = checkpoint / "config.json"
+    config.write_bytes(b"config")
+
+    assert artifact_sha256(model) == hashlib.sha256(b"model").hexdigest()
+    directory_hash = artifact_sha256(checkpoint)
+    assert artifact_sha256(checkpoint) == directory_hash
+    config.write_bytes(b"changed")
+    assert artifact_sha256(checkpoint) != directory_hash
+
+
+def test_evaluation_checkpoint_resolution_is_explicit(tmp_path: Path) -> None:
+    """Source and candidate manifests should identify the exact object loaded."""
+    assert resolve_evaluation_checkpoint(tmp_path, None, "source") == tmp_path / "checkpoint"
+    candidate = tmp_path / "candidate.pt"
+    assert resolve_evaluation_checkpoint(tmp_path, candidate, "candidate") == candidate
+    with pytest.raises(ValueError, match="requires a checkpoint"):
+        resolve_evaluation_checkpoint(tmp_path, None, "candidate")
+
+
+def test_environment_rng_is_reseeded_after_policy_construction() -> None:
+    """Different policy initialization draws must not change paired evaluation environments."""
+    seed = 4728
+
+    def consume_policy_rng(draws: int) -> None:
+        for _ in range(draws):
+            random.random()
+            np.random.random()
+            torch.rand(1)
+
+    def environment_signature() -> tuple[float, float, torch.Tensor]:
+        return random.random(), float(np.random.random()), torch.rand(4)
+
+    signatures = []
+    for policy_draws in (1, 97):
+        consume_policy_rng(policy_draws)
+        signatures.append(build_evaluation_environment(environment_signature, seed=seed))
+
+    assert signatures[0][0] == signatures[1][0]
+    assert signatures[0][1] == signatures[1][1]
+    assert torch.equal(signatures[0][2], signatures[1][2])
 
 
 class _BaseEnv:
@@ -92,7 +146,7 @@ class _SameStepEnv:
     def _get_qpos_qvel(self, to_numpy: bool = False):
         assert not to_numpy
         state = self._env.state.unsqueeze(-1)
-        return state.repeat(1, 36), state.repeat(1, 35)
+        return state.repeat(1, BFM_QPOS_DIM), state.repeat(1, BFM_QVEL_DIM)
 
     def close(self) -> None:
         pass

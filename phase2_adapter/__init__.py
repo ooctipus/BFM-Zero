@@ -5,6 +5,8 @@ from .environment import (
     BFM_AUXILIARY_EVIDENCE_NAMES,
     BFM_CONTROL_HZ,
     BFM_FIELD_WIDTHS,
+    BFM_QPOS_DIM,
+    BFM_QVEL_DIM,
     BFMZeroVecEnv,
     ExactFinalObservationCapture,
 )
@@ -14,6 +16,8 @@ __all__ = [
     "BFM_AUXILIARY_EVIDENCE_NAMES",
     "BFM_CONTROL_HZ",
     "BFM_FIELD_WIDTHS",
+    "BFM_QPOS_DIM",
+    "BFM_QVEL_DIM",
     "BFMZeroVecEnv",
     "ExactFinalObservationCapture",
 ]

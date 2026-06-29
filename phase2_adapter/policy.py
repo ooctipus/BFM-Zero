@@ -66,6 +66,21 @@ class BFMCandidatePolicy:
         return TensorDict(fields, batch_size=[batch_size], device=self.device)
 
 
+def resolve_evaluation_checkpoint(
+    model_folder: str | Path,
+    checkpoint: str | Path | None,
+    checkpoint_type: str,
+) -> Path:
+    """Resolve the exact source directory or candidate file loaded for evaluation."""
+    if checkpoint_type == "source":
+        return Path(checkpoint) if checkpoint is not None else Path(model_folder) / "checkpoint"
+    if checkpoint_type != "candidate":
+        raise ValueError(f"Unknown checkpoint type: {checkpoint_type!r}.")
+    if checkpoint is None:
+        raise ValueError("Candidate evaluation requires a checkpoint.")
+    return Path(checkpoint)
+
+
 def load_evaluation_policy(
     model_folder: str | Path,
     checkpoint: str | Path | None,
@@ -74,19 +89,15 @@ def load_evaluation_policy(
     model_profile: str = BFM_MODEL_PROFILE_DEFAULT,
 ) -> Any:
     """Load a source or unified policy behind one native evaluation contract."""
+    checkpoint_path = resolve_evaluation_checkpoint(model_folder, checkpoint, checkpoint_type)
     if checkpoint_type == "source":
         from humanoidverse.agents.load_utils import load_model_from_checkpoint_dir
 
-        checkpoint = Path(checkpoint) if checkpoint is not None else Path(model_folder) / "checkpoint"
-        model = load_model_from_checkpoint_dir(checkpoint, device="cuda")
+        model = load_model_from_checkpoint_dir(checkpoint_path, device="cuda")
         model.to(device)
         model.eval()
         return model
-    if checkpoint_type != "candidate":
-        raise ValueError(f"Unknown checkpoint type: {checkpoint_type!r}.")
-    if checkpoint is None:
-        raise ValueError("Candidate evaluation requires a checkpoint.")
-    return load_candidate_policy(checkpoint, device, model_profile)
+    return load_candidate_policy(checkpoint_path, device, model_profile)
 
 
 def load_candidate_policy(
