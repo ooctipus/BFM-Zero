@@ -54,6 +54,7 @@ TIMING_FIELDS = (
     "learning_seconds",
     "iteration_seconds",
 )
+FORBIDDEN_TENSOR_SUFFIXES = {".pt", ".safetensors"}
 BOUNDARY_HOOKS = {
     "start": "OffPolicyRunner._observe_iteration_start",
     "end": "OffPolicyRunner._observe_iteration_learning_complete",
@@ -380,7 +381,7 @@ def load_throughput_timing(output_dir: Path, spec: ThroughputSpec) -> dict[str, 
         or len(curriculum_payload["metrics"]) != MOTION_COUNT
     ):
         raise ValueError("Throughput transition-zero curriculum evidence differs.")
-    if any(path.suffix == ".pt" for path in output_dir.rglob("*") if path.is_file()):
+    if any(path.suffix in FORBIDDEN_TENSOR_SUFFIXES for path in output_dir.rglob("*") if path.is_file()):
         raise ValueError("Throughput run contains a forbidden tensor artifact.")
     if any(path.name.startswith("events.out.tfevents") for path in output_dir.rglob("*") if path.is_file()):
         raise ValueError("Throughput run contains forbidden logger output.")

@@ -156,9 +156,11 @@ def test_throughput_runner_uses_two_exact_sync_boundaries_and_128_rows(
     assert throughput.load_throughput_timing(output, spec) == summary
 
 
+@pytest.mark.parametrize("suffix", (".pt", ".safetensors"))
 def test_throughput_timing_rejects_tensor_or_logger_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
 ) -> None:
     spec = throughput.load_throughput_spec(_contract(tmp_path), "residual_6x1024")
     output = tmp_path / "output"
@@ -168,7 +170,7 @@ def test_throughput_timing_rejects_tensor_or_logger_artifacts(
     _complete_timing(runner, monkeypatch)
     runner.write_timing(output, spec)
 
-    tensor = output / "policy.pt"
+    tensor = output / f"policy{suffix}"
     tensor.write_bytes(b"forbidden")
     with pytest.raises(ValueError, match="tensor artifact"):
         throughput.load_throughput_timing(output, spec)
