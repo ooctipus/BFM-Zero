@@ -170,6 +170,11 @@ class _BFMEvaluationCheckpointRunner(OffPolicyRunner):
             )
 
 
+def _configure_training_runtime() -> None:
+    """Match the released BFM float32 matrix-multiplication policy."""
+    torch.set_float32_matmul_precision("high")
+
+
 def main() -> None:
     """Run the candidate for an exact number of native environment transitions."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -186,6 +191,7 @@ def main() -> None:
     if args.output_dir.exists():
         raise FileExistsError(f"Output directory already exists: {args.output_dir}")
     args.output_dir.mkdir(parents=True)
+    _configure_training_runtime()
     torch.cuda.set_device(torch.device(args.device))
     set_seed_everywhere(args.seed)
     env = make_native_environment(

@@ -7,9 +7,24 @@ from rsl_rl.models.forward_backward_model import ForwardBackwardModel
 from rsl_rl.runners.off_policy_runner import OffPolicyRunner
 from tensordict import TensorDict
 
-from phase2_adapter.candidate import _BFMEvaluationCheckpointRunner, candidate_config
+from phase2_adapter.candidate import (
+    _BFMEvaluationCheckpointRunner,
+    _configure_training_runtime,
+    candidate_config,
+)
 from phase2_adapter.environment import BFM_AUXILIARY_EVIDENCE_NAMES, BFM_FIELD_WIDTHS
 from phase2_adapter.policy import BFMCandidatePolicy
+
+
+def test_candidate_matches_released_matmul_precision() -> None:
+    """Candidate training should use the source's TF32-enabled float32 policy."""
+    previous = torch.get_float32_matmul_precision()
+    try:
+        torch.set_float32_matmul_precision("highest")
+        _configure_training_runtime()
+        assert torch.get_float32_matmul_precision() == "high"
+    finally:
+        torch.set_float32_matmul_precision(previous)
 
 
 def test_candidate_uses_released_cadence_routes_and_compact_history() -> None:
