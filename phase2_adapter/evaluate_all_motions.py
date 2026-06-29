@@ -31,6 +31,7 @@ def main() -> None:
     parser.add_argument("--model_folder", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--checkpoint_type", choices=("source", "candidate"), default="source")
+    parser.add_argument("--reference_config", type=Path, required=True)
     parser.add_argument("--data_path", type=Path, required=True)
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--implementation", required=True)
@@ -58,14 +59,7 @@ def main() -> None:
     args.output_dir.mkdir(parents=True)
     torch.cuda.set_device(torch.device(args.device))
     set_seed_everywhere(args.evaluation_seed)
-    model = load_evaluation_policy(
-        args.model_folder,
-        args.checkpoint,
-        args.checkpoint_type,
-        args.device,
-        args.model_profile,
-    )
-    with (args.model_folder / "config.json").open() as stream:
+    with args.reference_config.open() as stream:
         config = json.load(stream)
     env_options = config["env"]
     env_options["device"] = args.device
@@ -74,6 +68,16 @@ def main() -> None:
     env_options["disable_obs_noise"] = args.disable_obs_noise
     env_options["hydra_overrides"].append("env.config.headless=True")
     env = HumanoidVerseIsaacConfig(**env_options).build(args.num_envs)[0]
+    model = load_evaluation_policy(
+        args.model_folder,
+        args.checkpoint,
+        args.checkpoint_type,
+        args.device,
+        args.model_profile,
+        observation_space=env.single_observation_space,
+        action_dim=env.single_action_space.shape[0],
+        reference_config=args.reference_config,
+    )
     metrics, duration = run_native_tracking(model, env=env, num_envs=args.num_envs)
     rows = normalize_tracking_metrics(
         metrics,

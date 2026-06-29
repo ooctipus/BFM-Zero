@@ -86,12 +86,23 @@ def main() -> None:
 
     torch.cuda.set_device(torch.device(args.device))
     set_seed_everywhere(args.evaluation_seed)
+    task_count = len(BFM_REWARD_TASKS)
+    num_envs = task_count * args.episodes_per_task
+    env = make_native_environment(
+        reference_config=args.reference_config,
+        data_path=args.data_path,
+        num_envs=num_envs,
+        device=args.device,
+    )
     policy = load_evaluation_policy(
         args.model_folder,
         args.checkpoint,
         args.checkpoint_type,
         args.device,
         args.model_profile,
+        observation_space=env.env.single_observation_space,
+        action_dim=env.env.single_action_space.shape[0],
+        reference_config=args.reference_config,
     )
     dataset = torch.load(args.inference_dataset, map_location="cpu", weights_only=True)
     reward_model_path = get_g1_robot_xml_root() / "scene_29dof_freebase_noadditional_actuators.xml"
@@ -117,14 +128,6 @@ def main() -> None:
         batch_size=args.inference_batch_size,
     )
 
-    task_count = len(BFM_REWARD_TASKS)
-    num_envs = task_count * args.episodes_per_task
-    env = make_native_environment(
-        reference_config=args.reference_config,
-        data_path=args.data_path,
-        num_envs=num_envs,
-        device=args.device,
-    )
     rollout_contexts = contexts.repeat_interleave(args.episodes_per_task, dim=0)
     observations = env.get_observations()
     qpos_steps = []

@@ -1,4 +1,4 @@
-"""Load the unified candidate policy behind the native BFM model contract."""
+"""Load source and unified policies behind one native BFM evaluation contract."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from rsl_rl.models.forward_backward_model import ForwardBackwardModel
 from tensordict import TensorDict
 
 from .candidate import candidate_config
+from .compact_state import load_candidate_state, load_source_state
 from .environment import BFM_ACTION_DIM, BFM_FIELD_WIDTHS
 from .specification import BFM_MODEL_PROFILE_DEFAULT
 
@@ -72,12 +73,26 @@ def load_evaluation_policy(
     checkpoint_type: str,
     device: str | torch.device,
     model_profile: str = BFM_MODEL_PROFILE_DEFAULT,
+    observation_space: Any | None = None,
+    action_dim: int | None = None,
+    reference_config: str | Path | None = None,
 ) -> Any:
     """Load a source or unified policy behind one native evaluation contract."""
     if checkpoint_type == "source":
         from humanoidverse.agents.load_utils import load_model_from_checkpoint_dir
 
         checkpoint = Path(checkpoint) if checkpoint is not None else Path(model_folder) / "checkpoint"
+        if checkpoint.is_file():
+            if observation_space is None or action_dim is None or reference_config is None:
+                raise ValueError("Single-file source evaluation requires reference_config, observation_space, and action_dim.")
+            return load_source_state(
+                reference_config,
+                checkpoint,
+                observation_space,
+                action_dim,
+                device,
+                model_profile,
+            )
         model = load_model_from_checkpoint_dir(checkpoint, device="cuda")
         model.to(device)
         model.eval()
@@ -94,7 +109,7 @@ def load_candidate_policy(
     device: str | torch.device,
     model_profile: str = BFM_MODEL_PROFILE_DEFAULT,
 ) -> BFMCandidatePolicy:
-    """Construct the released-scale inference topology and load candidate state."""
+    """Construct the declared inference topology and load candidate tensor state."""
     device = torch.device(device)
     observations = TensorDict(
         {name: torch.zeros(1, width, device=device) for name, width in BFM_FIELD_WIDTHS.items()},
@@ -108,7 +123,6 @@ def load_candidate_policy(
         BFM_ACTION_DIM,
         config["model"],
     ).to(device)
-    saved = torch.load(checkpoint, map_location=device, weights_only=True)
-    model.load_state_dict(saved["model_state_dict"])
+    load_candidate_state(model, checkpoint, device)
     model.eval()
     return BFMCandidatePolicy(model)

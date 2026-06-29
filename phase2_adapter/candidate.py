@@ -14,9 +14,11 @@ from rsl_rl.runners.off_policy_runner import OffPolicyRunner
 from humanoidverse.agents.envs.humanoidverse_isaac import HumanoidVerseIsaacConfig
 from humanoidverse.agents.utils import set_seed_everywhere
 
+from .compact_state import export_candidate_state
 from .curriculum import run_curriculum_event
 from .environment import BFM_AUXILIARY_EVIDENCE_NAMES, BFMZeroVecEnv
 from .expert import BFMZeroExpertProvider
+from .milestone import MilestoneSink, optional_milestone_sink, replace_recovery_file
 from .specification import (
     BFM_MODEL_PROFILE_DEFAULT,
     BFM_MODEL_PROFILES,
@@ -144,29 +146,58 @@ def candidate_config(
     }
 
 
-class _BFMEvaluationCheckpointRunner(OffPolicyRunner):
-    """Write compact evaluation policies and one final recovery checkpoint."""
+class BFMEvaluationCheckpointRunner(OffPolicyRunner):
+    """Write one streamed compact state and one rolling recovery state."""
 
-    def __init__(self, *args, final_transitions: int, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        final_transitions: int,
+        artifact_dir: Path,
+        milestone_sink: MilestoneSink | None = None,
+        artifacts_enabled: bool = True,
+        **kwargs,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._final_transitions = final_transitions
+        self._artifact_dir = artifact_dir
+        self._milestone_sink = milestone_sink
+        self._artifacts_enabled = artifacts_enabled
+        self._last_published_transition: int | None = None
 
     def save(self, path: str, infos: dict | None = None) -> None:
-        if self.logger.log_dir is None:
-            raise RuntimeError("BFM milestone checkpoints require a log directory.")
-        destination = Path(self.logger.log_dir) / "evaluation_checkpoints"
-        self.publish_evaluation_checkpoint(destination)
+        transition = self.collected_transitions
+        if self._last_published_transition == transition:
+            return
+        artifacts_enabled = self._artifacts_enabled
+        if artifacts_enabled:
+            destination = self._artifact_dir / "evaluation_checkpoints"
+            self.publish_evaluation_checkpoint(destination)
         self.curriculum_event()
-        if self.collected_transitions == self._final_transitions:
+        milestone_sink = self._milestone_sink
+        if artifacts_enabled and milestone_sink is not None:
+            replace_recovery_file(
+                self._artifact_dir / "recovery.pt",
+                lambda temporary: OffPolicyRunner.save(self, str(temporary), infos),
+            )
+        elif artifacts_enabled and transition == self._final_transitions:
             super().save(path, infos)
+        self._last_published_transition = transition
 
-    def publish_evaluation_checkpoint(self, destination: Path) -> None:
+    def publish_evaluation_checkpoint(self, destination: Path) -> Path:
         """Publish the current compact policy without changing environment state."""
+        milestone_sink = self._milestone_sink
+        if milestone_sink is not None:
+            return milestone_sink.publish(
+                self.collected_transitions,
+                lambda temporary: export_candidate_state(self.alg.get_policy(), temporary),
+            )
         destination.mkdir(exist_ok=True)
         policy = destination / f"{self.collected_transitions}.pt"
         temporary = policy.with_suffix(".tmp")
-        torch.save({"model_state_dict": self.alg.get_policy().state_dict()}, temporary)
+        export_candidate_state(self.alg.get_policy(), temporary)
         temporary.replace(policy)
+        return policy
 
     def curriculum_event(self) -> None:
         """Apply one bridge-owned tracking curriculum update."""
@@ -181,7 +212,7 @@ class _BFMEvaluationCheckpointRunner(OffPolicyRunner):
                 env=self.env.env,
                 num_envs=self.env.num_envs,
                 transition=self.collected_transitions,
-                output_dir=Path(self.logger.log_dir) / "curriculum_events",
+                output_dir=self._artifact_dir / "curriculum_events",
                 device=self.device,
                 update_expert_priorities=lambda values: self.alg.expert.set_priorities(values.to(self.alg.expert.device)),
             )
@@ -195,20 +226,67 @@ class _BFMEvaluationCheckpointRunner(OffPolicyRunner):
             )
 
 
-def _initialize_evaluation_schedule(
-    runner: _BFMEvaluationCheckpointRunner,
+def initialize_candidate_runner(
+    runner: BFMEvaluationCheckpointRunner,
     destination: Path,
     schedule: BFMTrainingSchedule,
 ) -> None:
-    """Run the mandatory transition-zero curriculum and optionally publish its policy."""
-    if schedule.save_initial_evaluation_checkpoint:
+    """Run the mandatory transition-zero curriculum and optional artifact publication."""
+    artifacts_enabled = runner._artifacts_enabled
+    if schedule.save_initial_evaluation_checkpoint and artifacts_enabled:
         runner.publish_evaluation_checkpoint(destination)
     runner.curriculum_event()
+    milestone_sink = runner._milestone_sink
+    if schedule.save_initial_evaluation_checkpoint and artifacts_enabled and milestone_sink is not None:
+        replace_recovery_file(
+            runner._artifact_dir / "recovery.pt",
+            lambda temporary: OffPolicyRunner.save(runner, str(temporary)),
+        )
+    if schedule.save_initial_evaluation_checkpoint:
+        runner._last_published_transition = 0
 
 
 def _configure_training_runtime() -> None:
     """Match the released BFM float32 matrix-multiplication policy."""
     torch.set_float32_matmul_precision("high")
+
+
+def build_candidate_runner(
+    args: argparse.Namespace,
+    schedule: BFMTrainingSchedule,
+    milestone_sink: MilestoneSink | None,
+    *,
+    runner_class: type[BFMEvaluationCheckpointRunner] = BFMEvaluationCheckpointRunner,
+    artifacts_enabled: bool = True,
+    logging_enabled: bool = True,
+) -> tuple[BFMZeroVecEnv, BFMEvaluationCheckpointRunner]:
+    """Construct the exact candidate environment and runner without entering ``learn``."""
+    _configure_training_runtime()
+    torch.cuda.set_device(torch.device(args.device))
+    set_seed_everywhere(args.seed)
+    env = make_native_environment(
+        reference_config=args.reference_config,
+        data_path=args.data_path,
+        num_envs=args.num_envs,
+        device=args.device,
+    )
+    set_seed_everywhere(args.seed)
+    runner = runner_class(
+        env,
+        candidate_config(
+            BFMZeroExpertProvider(seed=args.seed),
+            seed=args.seed,
+            save_interval=schedule.save_interval,
+            model_profile=args.model_profile,
+        ),
+        log_dir=str(args.output_dir) if logging_enabled else None,
+        artifact_dir=args.output_dir,
+        device=args.device,
+        final_transitions=args.transitions,
+        milestone_sink=milestone_sink,
+        artifacts_enabled=artifacts_enabled,
+    )
+    return env, runner
 
 
 def main() -> None:
@@ -223,6 +301,9 @@ def main() -> None:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--save_initial_evaluation_checkpoint", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--evaluation_checkpoint_every_transitions", type=int, default=9_600_000)
+    parser.add_argument("--phase2f_run_root", type=Path)
+    parser.add_argument("--phase2f_run_id")
+    parser.add_argument("--phase2f_poll_seconds", type=float, default=1.0)
     parser.add_argument(
         "--model_profile",
         choices=tuple(BFM_MODEL_PROFILES),
@@ -238,31 +319,25 @@ def main() -> None:
     if args.output_dir.exists():
         raise FileExistsError(f"Output directory already exists: {args.output_dir}")
     args.output_dir.mkdir(parents=True)
-    _configure_training_runtime()
-    torch.cuda.set_device(torch.device(args.device))
-    set_seed_everywhere(args.seed)
-    env = make_native_environment(
-        reference_config=args.reference_config,
-        data_path=args.data_path,
-        num_envs=args.num_envs,
-        device=args.device,
-    )
-    set_seed_everywhere(args.seed)
-    runner = _BFMEvaluationCheckpointRunner(
-        env,
-        candidate_config(
-            BFMZeroExpertProvider(seed=args.seed),
-            seed=args.seed,
-            save_interval=schedule.save_interval,
-            model_profile=args.model_profile,
+    milestone_transitions = (
+        *((0,) if schedule.save_initial_evaluation_checkpoint else ()),
+        *range(
+            args.evaluation_checkpoint_every_transitions,
+            args.transitions + 1,
+            args.evaluation_checkpoint_every_transitions,
         ),
-        log_dir=str(args.output_dir),
-        device=args.device,
-        final_transitions=args.transitions,
     )
-    _initialize_evaluation_schedule(runner, args.output_dir / "evaluation_checkpoints", schedule)
+    milestone_sink = optional_milestone_sink(
+        args.phase2f_run_root,
+        args.phase2f_run_id,
+        tuple(milestone_transitions),
+        args.phase2f_poll_seconds,
+    )
+    env, runner = build_candidate_runner(args, schedule, milestone_sink)
+    initialize_candidate_runner(runner, args.output_dir / "evaluation_checkpoints", schedule)
     runner.learn(schedule.total_iterations)
-    torch.save({"model_state_dict": runner.alg.get_policy().state_dict()}, args.output_dir / "policy.pt")
+    if milestone_sink is None:
+        export_candidate_state(runner.alg.get_policy(), args.output_dir / "policy.pt")
     env.close()
 
 

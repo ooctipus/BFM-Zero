@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from .environment import BFM_AUXILIARY_EVIDENCE_NAMES
 
@@ -58,6 +59,21 @@ def resolve_model_profile(name: str) -> tuple[int, int]:
     except KeyError as error:
         choices = ", ".join(BFM_MODEL_PROFILES)
         raise ValueError(f"Unknown BFM model profile {name!r}; expected one of: {choices}.") from error
+
+
+def source_model_config(config: Any, profile: str, device: str) -> Any:
+    """Derive the source model topology selected by one declared capacity profile."""
+    hidden_dim, hidden_layers = resolve_model_profile(profile)
+    architecture = config.agent.model.archi
+    architecture = architecture.model_copy(
+        update={
+            "f": architecture.f.model_copy(update={"hidden_dim": hidden_dim, "hidden_layers": hidden_layers}),
+            "actor": architecture.actor.model_copy(update={"hidden_dim": hidden_dim, "hidden_layers": hidden_layers}),
+            "critic": architecture.critic.model_copy(update={"hidden_dim": hidden_dim, "hidden_layers": hidden_layers}),
+            "aux_critic": architecture.aux_critic.model_copy(update={"hidden_dim": hidden_dim, "hidden_layers": hidden_layers}),
+        }
+    )
+    return config.agent.model.model_copy(update={"device": device, "archi": architecture})
 
 
 def observation_routes() -> dict[str, list[str]]:

@@ -5,9 +5,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from phase2_adapter import source
-from phase2_adapter.candidate import _initialize_evaluation_schedule, candidate_config
+from phase2_adapter.candidate import (
+    BFMEvaluationCheckpointRunner,
+    candidate_config,
+    initialize_candidate_runner,
+)
 from phase2_adapter.specification import resolve_training_schedule
 
 
@@ -91,6 +96,11 @@ def test_source_and_candidate_consume_the_same_derived_schedule(tmp_path, monkey
 
     assert loaded.num_env_steps == 28_800_000
     assert loaded.checkpoint_every_steps == 9_600_000
+    assert loaded.agent.model.archi.f.hidden_dim == 1_024
+    assert loaded.agent.model.archi.f.hidden_layers == 6
+    assert loaded.agent.model.archi.actor.hidden_dim == 1_024
+    assert loaded.agent.model.archi.critic.hidden_dim == 1_024
+    assert loaded.agent.model.archi.aux_critic.hidden_dim == 1_024
 
 
 @pytest.mark.parametrize("save_initial", (False, True))
@@ -100,7 +110,7 @@ def test_source_transition_zero_curriculum_and_policy_follow_schedule(tmp_path, 
     checkpoints = []
     monkeypatch.setattr(source, "load_expert_trajectories_from_motion_lib", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(source, "_source_curriculum_event", lambda *_args, transition, **_kwargs: events.append(transition))
-    monkeypatch.setattr(source, "_save_evaluation_checkpoint", lambda *_args, **_kwargs: checkpoints.append(_args[-1]))
+    monkeypatch.setattr(source, "_save_evaluation_checkpoint", lambda *_args, **_kwargs: checkpoints.append(_args[2]))
     monkeypatch.setattr(
         source,
         "BFMZeroVecEnv",
@@ -206,6 +216,10 @@ def test_candidate_transition_zero_curriculum_and_policy_follow_schedule(tmp_pat
     """Candidate should implement the same transition-zero policy as source."""
     events = []
     runner = SimpleNamespace(
+        _artifact_dir=tmp_path,
+        _artifacts_enabled=True,
+        _last_published_transition=None,
+        _milestone_sink=None,
         publish_evaluation_checkpoint=lambda _destination: events.append("checkpoint"),
         curriculum_event=lambda: events.append("curriculum"),
     )
@@ -216,6 +230,41 @@ def test_candidate_transition_zero_curriculum_and_policy_follow_schedule(tmp_pat
         save_initial_evaluation_checkpoint=save_initial,
     )
 
-    _initialize_evaluation_schedule(runner, tmp_path, schedule)
+    initialize_candidate_runner(runner, tmp_path, schedule)
 
     assert tuple(events) == expected
+
+
+def test_source_and_candidate_publish_through_the_same_sink_contract(tmp_path) -> None:
+    """Both learner call sites should provide one transition and one regular tensor file."""
+    publications = []
+
+    class Sink:
+        def publish(self, transition: int, export) -> Path:
+            destination = tmp_path / f"{len(publications)}.pt"
+            export(destination)
+            publications.append((transition, destination))
+            return destination
+
+    sink = Sink()
+    source_model = SimpleNamespace(
+        _actor=torch.nn.Linear(3, 2),
+        _backward_map=torch.nn.Linear(3, 2),
+        _obs_normalizer=torch.nn.Linear(3, 3),
+    )
+    candidate_model = SimpleNamespace(
+        actor_network=torch.nn.Linear(3, 2),
+        backward_network=torch.nn.Linear(3, 2),
+        observation_normalizers=torch.nn.ModuleDict({"state": torch.nn.Linear(3, 3)}),
+        action_distribution=torch.nn.Linear(2, 2),
+    )
+    source_path = source._save_evaluation_checkpoint(source_model, tmp_path, 7, sink)
+    runner = object.__new__(BFMEvaluationCheckpointRunner)
+    runner._milestone_sink = sink
+    runner.collected_transitions = 7
+    runner.alg = SimpleNamespace(get_policy=lambda: candidate_model)
+    candidate_path = runner.publish_evaluation_checkpoint(tmp_path)
+
+    assert publications == [(7, source_path), (7, candidate_path)]
+    assert source_path.is_file()
+    assert candidate_path.is_file()

@@ -25,16 +25,18 @@ from humanoidverse.agents.envs.humanoidverse_isaac import load_expert_trajectori
 from humanoidverse.agents.utils import set_seed_everywhere
 from humanoidverse.train import TrainConfig, Workspace
 
+from .compact_state import export_source_state
 from .curriculum import run_curriculum_event
 from .environment import BFM_AUXILIARY_EVIDENCE_NAMES, BFMZeroVecEnv
+from .milestone import MilestoneSink, optional_milestone_sink, replace_recovery_directory
 from .specification import (
     BFM_MODEL_PROFILE_DEFAULT,
     BFM_MODEL_PROFILES,
     BFMTrainingSchedule,
     observation_routes,
     replay_config,
-    resolve_model_profile,
     resolve_training_schedule,
+    source_model_config,
 )
 
 
@@ -135,8 +137,18 @@ class _SourceReplay:
         }
 
 
-def _save_evaluation_checkpoint(model: Any, work_dir: Path, transition: int) -> None:
-    """Publish one source evaluation model with an atomic directory rename."""
+def _save_evaluation_checkpoint(
+    model: Any,
+    work_dir: Path,
+    transition: int,
+    milestone_sink: MilestoneSink | None = None,
+) -> Path:
+    """Export one compact source tensor state through the shared milestone sink."""
+    if milestone_sink is not None:
+        return milestone_sink.publish(
+            transition,
+            lambda destination: export_source_state(model, destination),
+        )
     checkpoints = work_dir / "evaluation_checkpoints"
     checkpoints.mkdir(parents=True, exist_ok=True)
     checkpoint = checkpoints / str(transition)
@@ -150,6 +162,7 @@ def _save_evaluation_checkpoint(model: Any, work_dir: Path, transition: int) -> 
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+    return checkpoint
 
 
 def _source_curriculum_event(
@@ -191,7 +204,11 @@ def _source_curriculum_event(
     return None
 
 
-def _train(workspace: Workspace, schedule: BFMTrainingSchedule) -> None:
+def _train(
+    workspace: Workspace,
+    schedule: BFMTrainingSchedule,
+    milestone_sink: MilestoneSink | None = None,
+) -> None:
     """Run the released update equations over exact bridge transitions."""
     cfg = workspace.cfg
     agent = workspace.agent
@@ -201,8 +218,13 @@ def _train(workspace: Workspace, schedule: BFMTrainingSchedule) -> None:
         device=cfg.buffer_device,
     )
     if schedule.save_initial_evaluation_checkpoint:
-        _save_evaluation_checkpoint(agent._model, workspace.work_dir, 0)
+        _save_evaluation_checkpoint(agent._model, workspace.work_dir, 0, milestone_sink)
     _source_curriculum_event(workspace, expert, transition=0)
+    if milestone_sink is not None and schedule.save_initial_evaluation_checkpoint:
+        replace_recovery_directory(
+            workspace.work_dir / "recovery",
+            lambda destination: agent.save(str(destination)),
+        )
     env = BFMZeroVecEnv(workspace.train_env, terminal_profile="correct_terminal", device=cfg.env.device)
     observations = env.get_observations()
     replay = _SourceReplay(
@@ -282,38 +304,34 @@ def _train(workspace: Workspace, schedule: BFMTrainingSchedule) -> None:
                 interval_start = time.perf_counter()
 
             if completed % cfg.checkpoint_every_steps == 0:
-                _save_evaluation_checkpoint(agent._model, workspace.work_dir, completed)
+                _save_evaluation_checkpoint(agent._model, workspace.work_dir, completed, milestone_sink)
                 reset_observations = _source_curriculum_event(workspace, expert, transition=completed, env=env)
                 if reset_observations is None:
                     raise RuntimeError("A post-training curriculum event must reset the behavior environment.")
                 replay.process_env_reset(reset_observations)
                 observations = reset_observations
+                if milestone_sink is not None:
+                    replace_recovery_directory(
+                        workspace.work_dir / "recovery",
+                        lambda destination: agent.save(str(destination)),
+                    )
 
         replay.assert_no_errors()
-        agent.save(str(workspace.work_dir / "checkpoint"))
+        if milestone_sink is None:
+            agent.save(str(workspace.work_dir / "checkpoint"))
     finally:
         env.close()
 
 
 def _load_config(args: argparse.Namespace, schedule: BFMTrainingSchedule) -> TrainConfig:
     config = TrainConfig.model_validate_json(args.reference_config.read_text())
-    hidden_dim, hidden_layers = resolve_model_profile(args.model_profile)
     env = config.env.model_copy(
         update={
             "device": args.device,
             "lafan_tail_path": str(args.data_path.resolve()),
         }
     )
-    architecture = config.agent.model.archi
-    architecture = architecture.model_copy(
-        update={
-            "f": architecture.f.model_copy(update={"hidden_dim": hidden_dim, "hidden_layers": hidden_layers}),
-            "actor": architecture.actor.model_copy(update={"hidden_dim": hidden_dim, "hidden_layers": hidden_layers}),
-            "critic": architecture.critic.model_copy(update={"hidden_dim": hidden_dim, "hidden_layers": hidden_layers}),
-            "aux_critic": architecture.aux_critic.model_copy(update={"hidden_dim": hidden_dim, "hidden_layers": hidden_layers}),
-        }
-    )
-    model = config.agent.model.model_copy(update={"device": args.device, "archi": architecture})
+    model = source_model_config(config, args.model_profile, args.device)
     agent = config.agent.model_copy(update={"model": model, "compile": args.compile})
     return config.model_copy(
         update={
@@ -353,6 +371,9 @@ def main() -> None:
     parser.add_argument("--evaluation_checkpoint_every_transitions", type=int, default=9_600_000)
     parser.add_argument("--save_initial_evaluation_checkpoint", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--phase2f_run_root", type=Path)
+    parser.add_argument("--phase2f_run_id")
+    parser.add_argument("--phase2f_poll_seconds", type=float, default=1.0)
     parser.add_argument(
         "--model_profile",
         choices=tuple(BFM_MODEL_PROFILES),
@@ -370,7 +391,17 @@ def main() -> None:
     torch.cuda.set_device(torch.device(args.device))
     set_seed_everywhere(args.seed)
     workspace = Workspace(_load_config(args, schedule))
-    _train(workspace, schedule)
+    milestone_transitions = (
+        *((0,) if schedule.save_initial_evaluation_checkpoint else ()),
+        *range(args.evaluation_checkpoint_every_transitions, args.transitions + 1, args.evaluation_checkpoint_every_transitions),
+    )
+    milestone_sink = optional_milestone_sink(
+        args.phase2f_run_root,
+        args.phase2f_run_id,
+        tuple(milestone_transitions),
+        args.phase2f_poll_seconds,
+    )
+    _train(workspace, schedule, milestone_sink)
 
 
 if __name__ == "__main__":

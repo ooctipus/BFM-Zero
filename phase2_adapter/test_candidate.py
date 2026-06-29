@@ -3,19 +3,31 @@
 from types import SimpleNamespace
 
 import pytest
+import safetensors.torch
 import torch
 from rsl_rl.models.forward_backward_model import ForwardBackwardModel
 from rsl_rl.runners.off_policy_runner import OffPolicyRunner
 from tensordict import TensorDict
 
+import phase2_adapter.candidate as candidate_module
 from phase2_adapter.candidate import (
-    _BFMEvaluationCheckpointRunner,
+    BFMEvaluationCheckpointRunner,
     _configure_training_runtime,
+    build_candidate_runner,
     candidate_config,
 )
 from phase2_adapter.environment import BFM_AUXILIARY_EVIDENCE_NAMES, BFM_FIELD_WIDTHS
 from phase2_adapter.policy import BFMCandidatePolicy
 from phase2_adapter.specification import BFM_MODEL_PROFILES
+
+
+class _CandidateInferenceModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.actor_network = torch.nn.Linear(3, 2)
+        self.backward_network = torch.nn.Linear(3, 2)
+        self.observation_normalizers = torch.nn.ModuleDict({"state": torch.nn.Linear(3, 3)})
+        self.action_distribution = torch.nn.Linear(2, 2)
 
 
 def test_candidate_matches_released_matmul_precision() -> None:
@@ -117,10 +129,14 @@ def test_candidate_keeps_compact_milestones_and_one_full_checkpoint(tmp_path, mo
         full_saves.append((path, infos))
 
     monkeypatch.setattr(OffPolicyRunner, "save", record_full_save)
-    runner = object.__new__(_BFMEvaluationCheckpointRunner)
+    runner = object.__new__(BFMEvaluationCheckpointRunner)
     runner.logger = SimpleNamespace(log_dir=str(tmp_path))
-    runner.alg = SimpleNamespace(get_policy=lambda: torch.nn.Linear(2, 1))
+    runner._artifact_dir = tmp_path
+    runner.alg = SimpleNamespace(get_policy=_CandidateInferenceModel)
     runner._final_transitions = 19_200_000
+    runner._milestone_sink = None
+    runner._artifacts_enabled = True
+    runner._last_published_transition = None
     curriculum_events: list[int] = []
     runner.curriculum_event = lambda: curriculum_events.append(runner.collected_transitions)
     runner.collected_transitions = 0
@@ -137,7 +153,12 @@ def test_candidate_keeps_compact_milestones_and_one_full_checkpoint(tmp_path, mo
     first = tmp_path / "evaluation_checkpoints" / "9600000.pt"
 
     assert first.is_file()
-    assert "model_state_dict" in torch.load(first, weights_only=True)
+    assert {name.split(".", 1)[0] for name in safetensors.torch.load_file(first)} == {
+        "action_distribution",
+        "actor",
+        "backward",
+        "normalizers",
+    }
     assert full_saves == []
     assert curriculum_events == [0, 9_600_000]
 
@@ -148,3 +169,75 @@ def test_candidate_keeps_compact_milestones_and_one_full_checkpoint(tmp_path, mo
     assert second.is_file()
     assert full_saves == [(str(tmp_path / "full.pt"), {"final": True})]
     assert curriculum_events == [0, 9_600_000, 19_200_000]
+
+
+def test_candidate_can_disable_all_artifacts_without_disabling_curriculum(tmp_path, monkeypatch) -> None:
+    """Throughput observation should retain training semantics without tensor exports."""
+    full_saves = []
+    monkeypatch.setattr(OffPolicyRunner, "save", lambda *_args, **_kwargs: full_saves.append(True))
+    runner = object.__new__(BFMEvaluationCheckpointRunner)
+    runner.logger = SimpleNamespace(log_dir=str(tmp_path))
+    runner._artifact_dir = tmp_path
+    runner._final_transitions = 1
+    runner._milestone_sink = None
+    runner._artifacts_enabled = False
+    runner._last_published_transition = None
+    runner.collected_transitions = 1
+    runner.alg = SimpleNamespace(get_policy=_CandidateInferenceModel)
+    curriculum_events = []
+    runner.curriculum_event = lambda: curriculum_events.append(runner.collected_transitions)
+    runner.publish_evaluation_checkpoint = lambda _destination: (_ for _ in ()).throw(
+        AssertionError("artifact publication was not suppressed")
+    )
+
+    runner.save(str(tmp_path / "full.pt"))
+
+    assert curriculum_events == [1]
+    assert full_saves == []
+    assert runner._last_published_transition == 1
+    assert tuple(tmp_path.iterdir()) == ()
+
+
+def test_candidate_builder_constructs_declared_runner_subclass(tmp_path, monkeypatch) -> None:
+    """Timing observation should subclass the canonical runner without reproducing setup."""
+    env = object()
+    seeds = []
+    constructions = []
+    monkeypatch.setattr(candidate_module, "_configure_training_runtime", lambda: None)
+    monkeypatch.setattr(candidate_module.torch.cuda, "set_device", lambda _device: None)
+    monkeypatch.setattr(candidate_module, "set_seed_everywhere", seeds.append)
+    monkeypatch.setattr(candidate_module, "make_native_environment", lambda **_kwargs: env)
+
+    class TimingRunner(BFMEvaluationCheckpointRunner):
+        def __init__(self, *args, **kwargs) -> None:
+            constructions.append((args, kwargs))
+
+    args = SimpleNamespace(
+        device="cuda:0",
+        seed=4728,
+        reference_config=tmp_path / "reference.json",
+        data_path=tmp_path / "lafan.pkl",
+        num_envs=1_024,
+        output_dir=tmp_path / "output",
+        transitions=211_200_000,
+        model_profile="residual_6x1024",
+    )
+    schedule = SimpleNamespace(save_interval=9_375)
+    built_env, runner = build_candidate_runner(
+        args,
+        schedule,
+        None,
+        runner_class=TimingRunner,
+        artifacts_enabled=False,
+        logging_enabled=False,
+    )
+
+    assert built_env is env
+    assert isinstance(runner, TimingRunner)
+    assert seeds == [4728, 4728]
+    assert constructions[0][0][0] is env
+    assert constructions[0][1]["final_transitions"] == 211_200_000
+    assert constructions[0][1]["artifact_dir"] == tmp_path / "output"
+    assert constructions[0][1]["log_dir"] is None
+    assert constructions[0][1]["milestone_sink"] is None
+    assert constructions[0][1]["artifacts_enabled"] is False
