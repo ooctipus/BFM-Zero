@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -135,10 +136,20 @@ class _SourceReplay:
 
 
 def _save_evaluation_checkpoint(model: Any, work_dir: Path, transition: int) -> None:
-    """Save one immutable source policy at an evaluation transition."""
-    checkpoint_root = work_dir / "evaluation_checkpoints" / str(transition)
-    checkpoint_root.mkdir(parents=True, exist_ok=False)
-    model.save(str(checkpoint_root / "model"))
+    """Publish one source evaluation model with an atomic directory rename."""
+    checkpoints = work_dir / "evaluation_checkpoints"
+    checkpoints.mkdir(parents=True, exist_ok=True)
+    checkpoint = checkpoints / str(transition)
+    staging = checkpoints / f".{transition}.staging"
+    if checkpoint.exists() or staging.exists():
+        raise FileExistsError(f"Source evaluation checkpoint target is not empty: {checkpoint}.")
+    staging.mkdir()
+    try:
+        model.save(str(staging / "model"))
+        staging.rename(checkpoint)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def _source_curriculum_event(

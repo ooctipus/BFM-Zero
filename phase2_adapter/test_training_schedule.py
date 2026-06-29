@@ -1,6 +1,7 @@
 """Tests for the shared source/candidate transition schedule."""
 
 from argparse import Namespace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -125,3 +126,45 @@ def test_source_transition_zero_curriculum_does_not_serialize_unused_policy(tmp_
 
     assert events == [0]
     assert not (tmp_path / "evaluation_checkpoints").exists()
+
+
+def test_source_checkpoint_publication_is_atomic_and_rejects_stale_targets(tmp_path) -> None:
+    """Readers should see either no source milestone or one complete final directory."""
+    final = tmp_path / "evaluation_checkpoints/9600000"
+
+    class Model:
+        def save(self, path: str) -> None:
+            destination = Path(path)
+            assert destination.parent.name == ".9600000.staging"
+            assert not final.exists()
+            destination.mkdir()
+            (destination / "model.safetensors").write_bytes(b"complete")
+
+    source._save_evaluation_checkpoint(Model(), tmp_path, 9_600_000)
+    assert (final / "model/model.safetensors").read_bytes() == b"complete"
+    assert not (final.parent / ".9600000.staging").exists()
+    with pytest.raises(FileExistsError, match="target is not empty"):
+        source._save_evaluation_checkpoint(Model(), tmp_path, 9_600_000)
+
+    stale = tmp_path / "evaluation_checkpoints/.19200000.staging"
+    stale.mkdir()
+    with pytest.raises(FileExistsError, match="target is not empty"):
+        source._save_evaluation_checkpoint(Model(), tmp_path, 19_200_000)
+
+
+def test_source_checkpoint_failure_never_publishes_partial_directory(tmp_path) -> None:
+    """A normal save failure should remove staging and leave the final milestone absent."""
+
+    class FailingModel:
+        def save(self, path: str) -> None:
+            destination = Path(path)
+            destination.mkdir()
+            (destination / "partial").write_bytes(b"partial")
+            raise RuntimeError("save failed")
+
+    with pytest.raises(RuntimeError, match="save failed"):
+        source._save_evaluation_checkpoint(FailingModel(), tmp_path, 9_600_000)
+
+    checkpoints = tmp_path / "evaluation_checkpoints"
+    assert not (checkpoints / "9600000").exists()
+    assert not (checkpoints / ".9600000.staging").exists()
