@@ -17,6 +17,7 @@ from phase2_adapter.environment import (
     BFM_FIELD_WIDTHS,
     BFMZeroVecEnv,
 )
+from phase2_adapter.evaluate_all_motions import evaluation_protocol
 from phase2_adapter.evaluation import normalize_tracking_metrics
 from phase2_adapter.source import _save_evaluation_checkpoint, _SourceReplay
 from phase2_adapter.specification import replay_config
@@ -24,6 +25,14 @@ from phase2_adapter.specification import replay_config
 
 class _ActionSpace:
     shape = (2, BFM_ACTION_DIM)
+
+
+def test_evaluation_protocol_keeps_randomization_and_noise_as_one_contract() -> None:
+    """Stochastic and deterministic evaluation should be explicit paired protocols."""
+    assert evaluation_protocol(False, False) == "native_stochastic"
+    assert evaluation_protocol(True, True) == "deterministic"
+    with pytest.raises(ValueError, match="enable or disable"):
+        evaluation_protocol(True, False)
 
 
 class _BaseEnv:

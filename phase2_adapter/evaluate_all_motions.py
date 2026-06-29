@@ -18,6 +18,13 @@ from .policy import load_evaluation_policy
 from .specification import BFM_MODEL_PROFILE_DEFAULT, BFM_MODEL_PROFILES
 
 
+def evaluation_protocol(disable_domain_randomization: bool, disable_obs_noise: bool) -> str:
+    """Name the only two frozen BFM evaluation protocols."""
+    if disable_domain_randomization != disable_obs_noise:
+        raise ValueError("BFM evaluation must enable or disable domain randomization and observation noise together.")
+    return "deterministic" if disable_domain_randomization else "native_stochastic"
+
+
 def main() -> None:
     """Load the native model/environment and write complete immutable evidence."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -44,6 +51,7 @@ def main() -> None:
         default=BFM_MODEL_PROFILE_DEFAULT,
     )
     args = parser.parse_args()
+    protocol = evaluation_protocol(args.disable_domain_randomization, args.disable_obs_noise)
 
     if args.output_dir.exists():
         raise FileExistsError(f"Output directory already exists: {args.output_dir}")
@@ -98,6 +106,9 @@ def main() -> None:
         "record_count": len(rows),
         "duration_seconds": duration,
         "model_profile": args.model_profile,
+        "evaluation_protocol": protocol,
+        "domain_randomization": not args.disable_domain_randomization,
+        "observation_noise": not args.disable_obs_noise,
     }
     with (args.output_dir / "manifest.json").open("x") as stream:
         json.dump(manifest, stream, indent=2, sort_keys=True)
